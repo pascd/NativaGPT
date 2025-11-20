@@ -152,7 +152,7 @@ class NativaGPT:
                     self.mcp_loop.start()
 
                     # Create and connect MCP client
-                    self.mcp_client = MCPClient()
+                    self.mcp_client = MCPClient(self.llm_handler)
                     self.mcp_loop.run_coroutine(
                         self.mcp_client.connect_to_server(self.mcp_server_hosts)
                     )

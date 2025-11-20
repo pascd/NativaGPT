@@ -8,27 +8,20 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from bytez import Bytez
 from dotenv import load_dotenv
+from NativaGPT.lib.handlers.llm_prompt_handler import LLMPromptHandler
 
 load_dotenv()
 
-BYTEZ_KEY = os.getenv("BYTEZ_API_KEY") or os.getenv("BYTEZ_KEY") or "c5767be58c1ff8b1dde99ff333f6c4b3"
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-
 
 class MCPClient:
-    def __init__(self):
+    def __init__(self, llm_handler: Optional[LLMPromptHandler] = None):
         # Store multiple server sessions
         self.servers: List[Dict[str, Any]] = []
         self.exit_stack = AsyncExitStack()
 
-        # Bytez setup (exactly like the working example)
-        self.sdk = Bytez(BYTEZ_KEY)
-        if OPENAI_KEY:
-            self.model = self.sdk.model("openai/gpt-4o", OPENAI_KEY)
-        else:
-            self.model = self.sdk.model("openai/gpt-4o")
+        self.llm_handler = llm_handler
+        print("[INFO] Using NativaGPT LLM handler for better performance")
 
     async def connect_to_server(self, server_script_list: List[str]):
         """Connect to multiple MCP servers (python or node)."""
@@ -56,7 +49,7 @@ class MCPClient:
                 server_params = StdioServerParameters(
                     command=command,
                     args=[server_script_path],
-                    env=env  # Changed from env=None - pass the environment!
+                    env=env
                 )
 
                 stdio_transport = await self.exit_stack.enter_async_context(
@@ -110,28 +103,46 @@ class MCPClient:
                     return server
         return None
 
-    def _run_model(self, messages: List[Dict[str, str]]) -> str:
+    def _run_model(self, messages: List[Dict[str, str]], images: List[str] = None) -> str:
         """
-        Call Bytez model with given messages and return plain text.
-        Handles both (output, error) and result.output/result.error styles.
+        Call NativaGPT's LLM handler with given messages and return plain text.
         """
-        result = self.model.run(messages)
+        try:
+            # Convert messages to a single prompt
+            prompt_parts = []
+            for msg in messages:
+                role = msg['role']
+                content = msg['content']
 
-        # Old style: (output, error)
-        if isinstance(result, tuple) and len(result) == 2:
-            output, error = result
-        else:
-            # New style: object with .output / .error
-            output = getattr(result, "output", result)
-            error = getattr(result, "error", None)
+                if role == 'system':
+                    prompt_parts.append(f"{content}\n\n")
+                elif role == 'user':
+                    prompt_parts.append(f"User: {content}\n")
+                elif role == 'assistant':
+                    prompt_parts.append(f"Assistant: {content}\n")
 
-        if error:
-            return f"Model error: {error}"
+            combined_prompt = "".join(prompt_parts)
 
-        # Normalise to string
-        if isinstance(output, dict) and "content" in output:
-            return str(output["content"])
-        return str(output)
+            # Call the LLM handler
+            response = self.llm_handler.send_to_llm(combined_prompt, images=images)
+
+            if not response.get("success", False):
+                error_msg = response.get("error", "Unknown error")
+                return f"Model error: {error_msg}"
+
+            # Extract text content
+            text_content = response.get("text_content", "")
+
+            if not text_content:
+                return "Model returned empty response"
+
+            return text_content
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[ERROR] LLM call failed:\n{error_details}")
+            return f"Model error: {str(e)}"
 
     @staticmethod
     def _extract_tool_text(result: Any) -> str:
@@ -214,6 +225,7 @@ Rules:
         try:
             plan = self._parse_plan_json(plan_raw)
         except json.JSONDecodeError:
+            # If can't parse, return the raw response
             return plan_raw
 
         action = plan.get("action")
@@ -225,7 +237,6 @@ Rules:
         if action not in ["final_answer", "call_tool"]:
             # Check if action is actually a tool name
             if action in all_tool_names:
-                # Model put tool name as action, fix it
                 plan = {
                     "action": "call_tool",
                     "tool": action,
@@ -233,7 +244,6 @@ Rules:
                 }
                 action = "call_tool"
                 print(f"[DEBUG] Fixed plan: model used tool name '{plan['tool']}' as action")
-            # Check if there's a "tool" field - if so, it's trying to call a tool
             elif "tool" in plan or "args" in plan:
                 plan = {
                     "action": "call_tool",
@@ -242,7 +252,6 @@ Rules:
                 }
                 action = "call_tool"
             else:
-                # Unknown format, return as-is
                 return f"Unexpected plan from model: {json.dumps(plan, indent=2)}"
 
         # 2A) No tool: final answer directly
@@ -269,17 +278,31 @@ Rules:
                 result = await server["session"].call_tool(tool_name, args)
                 tool_output = self._extract_tool_text(result)
                 print(f"[INFO] Tool completed successfully")
+
+                # Check if tool output contains image paths
+                images_to_send = []
+                if "image_path" in tool_output:
+                    try:
+                        # Try to parse JSON output
+                        output_data = json.loads(tool_output)
+                        img_path = output_data.get("image_path")
+                        if img_path and os.path.exists(img_path):
+                            images_to_send.append(img_path)
+                            print(f"[INFO] Attaching image: {img_path}")
+                    except:
+                        pass
+
             except Exception as e:
                 import traceback
                 print(f"[ERROR] Tool execution failed:\n{traceback.format_exc()}")
                 return f"Error calling tool '{tool_name}' on server '{server['name']}': {e}"
 
-            # 3) Ask LLM to summarize tool output
+            # 3) Ask LLM to summarize tool output (with images if available)
             answer_system_prompt = """
-    You are a helpful assistant. The user asked a question, and an external tool
-    was called to get relevant data. Your job is to explain the tool output in
-    clear, concise natural language for the user.
-    """
+You are a helpful assistant. The user asked a question, and an external tool
+was called to get relevant data. Your job is to explain the tool output in
+clear, concise natural language for the user.
+"""
             answer_messages = [
                 {"role": "system", "content": answer_system_prompt.strip()},
                 {
@@ -293,7 +316,9 @@ Rules:
                     ),
                 },
             ]
-            final_answer = self._run_model(answer_messages)
+
+            # Send with images if available
+            final_answer = self._run_model(answer_messages, images=images_to_send if images_to_send else None)
             return final_answer
 
         # 2C) Unknown action
@@ -321,7 +346,10 @@ Rules:
         return json.loads(json_str)
 
     async def cleanup(self):
+        """Cleanup resources."""
         await self.exit_stack.aclose()
+        if self.llm_handler:
+            self.llm_handler.cleanup()
 
 
 async def main():
