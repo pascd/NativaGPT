@@ -20,7 +20,7 @@
     "use_webgpthandler": false,
     "webgpthandler_platform": "chatgpt",
     "use_tts": false,
-    "use_stt": false
+    "use_stt": true
   },
   "llm_config": {
     "endpoint": "https://api.iaedu.pt/agent-chat//api/v1/agent/cmamvd3n40000c801qeacoad2/stream",
