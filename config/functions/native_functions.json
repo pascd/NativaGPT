@@ -1,0 +1,92 @@
+[
+  {
+    "function": {
+      "name": "List files",
+      "description": "Function to list all files in a directory.",
+      "execution": "shell",
+      "command": "ls",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check disk",
+      "description": "Function to check disk usage.",
+      "execution": "shell",
+      "command": "df -h",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check memory usage",
+      "description": "Function to check RAM usage.",
+      "execution": "shell",
+      "command": "free -h",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check running processes",
+      "description": "Function to list all running processes.",
+      "execution": "shell",
+      "command": "ps aux",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check network connections",
+      "description": "Function to list active network connections.",
+      "execution": "shell",
+      "command": "netstat -tuln",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Show system uptime",
+      "description": "Function to display how long the system has been running.",
+      "execution": "shell",
+      "command": "uptime",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check disk I/O usage",
+      "description": "Function to monitor disk I/O operations.",
+      "execution": "shell",
+      "command": "iostat",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check system logs",
+      "description": "Function to view recent system logs.",
+      "execution": "shell",
+      "command": "journalctl -xe",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Show current directory",
+      "description": "Function to display the current working directory.",
+      "execution": "shell",
+      "command": "pwd",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check user info",
+      "description": "Function to display user information.",
+      "execution": "shell",
+      "command": "whoami",
+      "location": ""
+    }
+  }
+]

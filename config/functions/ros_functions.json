@@ -1,0 +1,560 @@
+[
+  {
+    "function": {
+      "name": "List ROS Topics",
+      "description": "List all active ROS topics currently published in the system",
+      "execution": "ros",
+      "command": "rostopic list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Topics",
+      "description": "List all active ROS2 topics currently published in the system",
+      "execution": "ros2",
+      "command": "ros2 topic list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Echo ROS Topic",
+      "description": "Display messages being published on a specific ROS topic. Usage: rostopic echo /topic_name",
+      "execution": "ros",
+      "command": "rostopic echo",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Echo ROS2 Topic",
+      "description": "Display messages being published on a specific ROS2 topic. Usage: ros2 topic echo /topic_name",
+      "execution": "ros2",
+      "command": "ros2 topic echo",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Topic Info",
+      "description": "Get information about a ROS topic including type, publishers, and subscribers. Usage: rostopic info /topic_name",
+      "execution": "ros",
+      "command": "rostopic info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Topic Info",
+      "description": "Get information about a ROS2 topic including type, publishers, and subscribers. Usage: ros2 topic info /topic_name",
+      "execution": "ros2",
+      "command": "ros2 topic info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Topic Hz",
+      "description": "Display publishing rate (frequency) of a ROS topic. Usage: rostopic hz /topic_name",
+      "execution": "ros",
+      "command": "rostopic hz",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Topic Hz",
+      "description": "Display publishing rate (frequency) of a ROS2 topic. Usage: ros2 topic hz /topic_name",
+      "execution": "ros2",
+      "command": "ros2 topic hz",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Publish to ROS Topic",
+      "description": "Publish a message to a ROS topic. Usage: rostopic pub /topic_name msg_type 'data'",
+      "execution": "ros",
+      "command": "rostopic pub",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Publish to ROS2 Topic",
+      "description": "Publish a message to a ROS2 topic. Usage: ros2 topic pub /topic_name msg_type 'data'",
+      "execution": "ros2",
+      "command": "ros2 topic pub",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS Nodes",
+      "description": "List all active ROS nodes currently running in the system",
+      "execution": "ros",
+      "command": "rosnode list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Nodes",
+      "description": "List all active ROS2 nodes currently running in the system",
+      "execution": "ros2",
+      "command": "ros2 node list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Node Info",
+      "description": "Get information about a ROS node including subscriptions, publications, and services. Usage: rosnode info /node_name",
+      "execution": "ros",
+      "command": "rosnode info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Node Info",
+      "description": "Get information about a ROS2 node including subscriptions, publications, and services. Usage: ros2 node info /node_name",
+      "execution": "ros2",
+      "command": "ros2 node info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Kill ROS Node",
+      "description": "Kill/terminate a running ROS node. Usage: rosnode kill /node_name",
+      "execution": "ros",
+      "command": "rosnode kill",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS Services",
+      "description": "List all available ROS services in the system",
+      "execution": "ros",
+      "command": "rosservice list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Services",
+      "description": "List all available ROS2 services in the system",
+      "execution": "ros2",
+      "command": "ros2 service list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Call ROS Service",
+      "description": "Call a ROS service with arguments. Usage: rosservice call /service_name [args]",
+      "execution": "ros",
+      "command": "rosservice call",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Call ROS2 Service",
+      "description": "Call a ROS2 service with arguments. Usage: ros2 service call /service_name service_type 'args'",
+      "execution": "ros2",
+      "command": "ros2 service call",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Service Type",
+      "description": "Get the message type of a ROS service. Usage: rosservice type /service_name",
+      "execution": "ros",
+      "command": "rosservice type",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Service Type",
+      "description": "Get the message type of a ROS2 service. Usage: ros2 service type /service_name",
+      "execution": "ros2",
+      "command": "ros2 service type",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS Parameters",
+      "description": "List all ROS parameters on the parameter server",
+      "execution": "ros",
+      "command": "rosparam list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Parameters",
+      "description": "List all ROS2 parameters for a specific node. Usage: ros2 param list /node_name",
+      "execution": "ros2",
+      "command": "ros2 param list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Parameter",
+      "description": "Get the value of a ROS parameter. Usage: rosparam get /parameter_name",
+      "execution": "ros",
+      "command": "rosparam get",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Parameter",
+      "description": "Get the value of a ROS2 parameter. Usage: ros2 param get /node_name parameter_name",
+      "execution": "ros2",
+      "command": "ros2 param get",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Set ROS Parameter",
+      "description": "Set the value of a ROS parameter. Usage: rosparam set /parameter_name value",
+      "execution": "ros",
+      "command": "rosparam set",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Set ROS2 Parameter",
+      "description": "Set the value of a ROS2 parameter. Usage: ros2 param set /node_name parameter_name value",
+      "execution": "ros2",
+      "command": "ros2 param set",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Record ROS Bag",
+      "description": "Record ROS topics to a bag file. Usage: rosbag record -a (all topics) or rosbag record /topic1 /topic2",
+      "execution": "ros",
+      "command": "rosbag record",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Record ROS2 Bag",
+      "description": "Record ROS2 topics to a bag file. Usage: ros2 bag record -a (all topics) or ros2 bag record /topic1 /topic2",
+      "execution": "ros2",
+      "command": "ros2 bag record",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Play ROS Bag",
+      "description": "Play back a recorded ROS bag file. Usage: rosbag play bagfile.bag",
+      "execution": "ros",
+      "command": "rosbag play",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Play ROS2 Bag",
+      "description": "Play back a recorded ROS2 bag file. Usage: ros2 bag play bagfile",
+      "execution": "ros2",
+      "command": "ros2 bag play",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS Bag Info",
+      "description": "Display information about a ROS bag file. Usage: rosbag info bagfile.bag",
+      "execution": "ros",
+      "command": "rosbag info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Bag Info",
+      "description": "Display information about a ROS2 bag file. Usage: ros2 bag info bagfile",
+      "execution": "ros2",
+      "command": "ros2 bag info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Run ROS Launch File",
+      "description": "Launch a ROS launch file. Usage: roslaunch package_name launch_file.launch",
+      "execution": "ros",
+      "command": "roslaunch",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Run ROS2 Launch File",
+      "description": "Launch a ROS2 launch file. Usage: ros2 launch package_name launch_file.py",
+      "execution": "ros2",
+      "command": "ros2 launch",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Run ROS Node",
+      "description": "Run a ROS node from a package. Usage: rosrun package_name node_name",
+      "execution": "ros",
+      "command": "rosrun",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Run ROS2 Node",
+      "description": "Run a ROS2 node from a package. Usage: ros2 run package_name node_name",
+      "execution": "ros2",
+      "command": "ros2 run",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "View TF Tree",
+      "description": "Display the transform tree structure in ROS. Usage: rosrun tf view_frames",
+      "execution": "ros",
+      "command": "rosrun tf view_frames",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "View ROS2 TF Tree",
+      "description": "Display the transform tree structure in ROS2. Usage: ros2 run tf2_tools view_frames",
+      "execution": "ros2",
+      "command": "ros2 run tf2_tools view_frames",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Echo TF Transform",
+      "description": "Display transform between two frames. Usage: rosrun tf tf_echo source_frame target_frame",
+      "execution": "ros",
+      "command": "rosrun tf tf_echo",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Echo ROS2 TF Transform",
+      "description": "Display transform between two frames in ROS2. Usage: ros2 run tf2_ros tf2_echo source_frame target_frame",
+      "execution": "ros2",
+      "command": "ros2 run tf2_ros tf2_echo",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS Packages",
+      "description": "List all available ROS packages in the workspace",
+      "execution": "ros",
+      "command": "rospack list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Packages",
+      "description": "List all available ROS2 packages in the workspace",
+      "execution": "ros2",
+      "command": "ros2 pkg list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Find ROS Package",
+      "description": "Find the path to a ROS package. Usage: rospack find package_name",
+      "execution": "ros",
+      "command": "rospack find",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Find ROS2 Package",
+      "description": "Find the path to a ROS2 package. Usage: ros2 pkg prefix package_name",
+      "execution": "ros2",
+      "command": "ros2 pkg prefix",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Show ROS Message Definition",
+      "description": "Display the definition of a ROS message type. Usage: rosmsg show message_type",
+      "execution": "ros",
+      "command": "rosmsg show",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Show ROS2 Message Definition",
+      "description": "Display the definition of a ROS2 message type. Usage: ros2 interface show message_type",
+      "execution": "ros2",
+      "command": "ros2 interface show",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Check ROS Master Status",
+      "description": "Check if ROS master is running and get its URI",
+      "execution": "shell",
+      "command": "echo $ROS_MASTER_URI",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Start ROS Core",
+      "description": "Start the ROS master node (roscore)",
+      "execution": "ros",
+      "command": "roscore",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Build ROS Workspace",
+      "description": "Build a ROS catkin workspace. Usage: catkin_make or catkin build",
+      "execution": "shell",
+      "command": "catkin_make",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Build ROS2 Workspace",
+      "description": "Build a ROS2 workspace using colcon. Usage: colcon build",
+      "execution": "shell",
+      "command": "colcon build",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Source ROS Workspace",
+      "description": "Source the ROS workspace setup file",
+      "execution": "shell",
+      "command": "source devel/setup.bash",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Source ROS2 Workspace",
+      "description": "Source the ROS2 workspace setup file",
+      "execution": "shell",
+      "command": "source install/setup.bash",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "RViz Visualization",
+      "description": "Launch RViz for 3D visualization of robot and sensor data",
+      "execution": "ros",
+      "command": "rosrun rviz rviz",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "RViz2 Visualization",
+      "description": "Launch RViz2 for 3D visualization of robot and sensor data in ROS2",
+      "execution": "ros2",
+      "command": "ros2 run rviz2 rviz2",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "rqt GUI",
+      "description": "Launch rqt, the Qt-based GUI framework for ROS",
+      "execution": "ros",
+      "command": "rqt",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "rqt Graph",
+      "description": "Visualize the ROS computation graph showing nodes and topics",
+      "execution": "ros",
+      "command": "rqt_graph",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "ROS2 Daemon Status",
+      "description": "Check the status of the ROS2 daemon",
+      "execution": "ros2",
+      "command": "ros2 daemon status",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "ROS2 Doctor",
+      "description": "Run diagnostics on ROS2 installation and check for issues",
+      "execution": "ros2",
+      "command": "ros2 doctor",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "List ROS2 Actions",
+      "description": "List all available ROS2 action servers",
+      "execution": "ros2",
+      "command": "ros2 action list",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get ROS2 Action Info",
+      "description": "Get information about a ROS2 action. Usage: ros2 action info /action_name",
+      "execution": "ros2",
+      "command": "ros2 action info",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Send ROS2 Action Goal",
+      "description": "Send a goal to a ROS2 action server. Usage: ros2 action send_goal /action_name action_type 'goal'",
+      "execution": "ros2",
+      "command": "ros2 action send_goal",
+      "location": ""
+    }
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "function": {
+      "name": "Move turtle",
+      "description": "Function to move the turtle using ROS command. Linear velocity parameters are described as (velx, vely, velz) and the angular velocities as (angx, angy, angz)",
+      "execution": "rostopic",
+      "command": "rostopic pub /turtle1/cmd_vel geometry_msgs/Twist -r 1 -- '[velx, vely, velz]' '[angx, angy, angz]'",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Get position of the turtle",
+      "description": "Function to retrieve the position of the turtle",
+      "execution": "shell",
+      "command": "rostopic echo /turtle1/pose -n 1",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Teleport turtle",
+      "description": "Function to teleport turtle to a specified position.",
+      "execution": "shell",
+      "command": "rosservice call /turtle1/teleport_absolute x: 0.0 y: 0.0 theta: 0.0",
+      "location": ""
+    }
+  },
+  {
+    "function": {
+      "name": "Reset turtlesim",
+      "description": "Function to reset the turtlesim environment. This will make the turtle go to its initial position",
+      "execution": "shell",
+      "command": "rosservice call /reset",
+      "location": ""
+    }
+  }
+]

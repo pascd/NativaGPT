@@ -1,0 +1,54 @@
+[project]
+name = "nativagpt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # Core dependencies
+    "numpy>=1.21.0",
+    "sounddevice~=0.4.6",
+    "pydub~=0.25.1",
+    "requests~=2.28.0",
+    "setuptools>=50.0.0,<70.0.0",
+    "torch>=2.0.0",
+    "soundfile~=0.12.1",
+    "Flask~=2.3.0",
+    "Flask-RESTful~=0.3.10",
+    "Flask-Cors~=4.0.0",
+    "scipy>=1.7.0,<1.12.0",
+    "transformers>=4.36.0",
+    "pathlib2>=2.3.0",
+    "qdrant-client>=1.1.0,<1.8.0",
+    "opencv-python>=4.5.0,<4.9.0",
+    "Pillow>=9.0.0",
+    "pyautogui>=0.9.50,<0.10.0",
+    "paho-mqtt>=1.5.0,<2.0.0",
+    "pynput>=1.7.0,<1.8.0",
+    "python-dateutil>=2.8.0",
+    "packaging>=20.0",
+    "torchvision>=0.15.0",
+    "timm",
+    "accelerate>=0.26.0",
+    "ollama",
+    "mcp",
+    "python-dotenv",
+    "bytez",
+    "dotenv",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Tell hatchling where your package is
+[tool.hatch.build.targets.wheel]
+packages = ["NativaGPT"]
+
+# Fix the deprecated dev-dependencies warning
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+]
