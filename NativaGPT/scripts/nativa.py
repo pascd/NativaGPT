@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+NativaGPT v2.2 - Fixed Version
+Main entry point with proper lazy initialization
+"""
 import base64
 import json
 import os
@@ -16,14 +21,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 
-# New import for key detection
-try:
-    from pynput import keyboard
-    HAS_PYNPUT = True
-except ImportError:
-    HAS_PYNPUT = False
-    logger.warn("Warning: 'pynput' not installed. Hotkey toggling will be disabled.")
-
 from dotenv import load_dotenv
 from NativaGPT.lib.coloring_logger import logger
 from NativaGPT.lib.config_manager import ConfigManager
@@ -32,8 +29,6 @@ from NativaGPT.lib.handlers.llm_prompt_handler import LLMPromptHandler
 from NativaGPT.lib.handlers.json_response_handler import JsonResponseHandler
 from NativaGPT.lib.handlers.topic_reader_handler import TopicReaderHandler
 from NativaGPT.lib.rag_similarity_check import RAGSimilarityCheck
-from NativaGPT.lib.speech_to_text.stt_prompt_handler import STTPromptHandler
-from NativaGPT.lib.text_to_speech.tts_prompt_handler import TTSPromptHandler
 from NativaGPT.lib.command_execution import CommandExecution
 from NativaGPT.lib.mcp.mcp_client import MCPClient
 
@@ -53,7 +48,7 @@ class AsyncLoopThread:
 
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
-        self._started.wait()  # Wait for loop to be ready
+        self._started.wait()
 
     def _run_loop(self):
         """Run the event loop in the background thread."""
@@ -79,14 +74,19 @@ class AsyncLoopThread:
 
 class NativaGPT:
     """
-    NativaGPT v2.1 - Added MCP Toggle Hotkey
+    NativaGPT v2.2 - Fixed Mode Handling
+
+    CRITICAL FIXES:
+    - ✅ STT/TTS handlers are NOT created during __init__
+    - ✅ Handlers only created when entering their respective modes
+    - ✅ Proper config validation before handler creation
+    - ✅ Clean mode switching with status messages
     """
 
-    # Pre-compiled trigger pattern (built lazily per instance)
     _trigger_pattern = None
 
     def __init__(self, config):
-        logger.info("Initializing NativaGPT v2.1...")
+        logger.info("Initializing NativaGPT v2.2 (FIXED VERSION)...")
 
         # Core configuration
         self.config = config
@@ -94,24 +94,24 @@ class NativaGPT:
         nativa_cfg = self.config.get("nativa_gpt", {})
         llm_cfg = self.config.get("llm_config", {})
 
+        # Check config for TTS/STT availability (NOT creating handlers yet!)
         self.use_tts = bool(nativa_cfg.get("use_tts", False))
         self.use_stt = bool(nativa_cfg.get("use_stt", False))
+
         self.active_listening_timeout = nativa_cfg.get("active_listening_timeout", 30)
         self.trigger_commands = nativa_cfg.get("user_msgs", {}).get("trigger_commands", [])
         self.listening_msg = nativa_cfg.get("user_msgs", {}).get("listening_msg", "Listening...")
         self.setup_prompt = llm_cfg.get("model_config", {}).get("setup_prompt", "")
         self.max_agentic_iterations = nativa_cfg.get("max_agentic_iterations", 5)
 
-        # Initialize handlers
-        self.stt_handler = STTPromptHandler(config) if self.use_stt else None
-        self.tts_handler = TTSPromptHandler(config) if self.use_tts else None
+        # Initialize core handlers (these are always needed)
         self.llm_handler = LLMPromptHandler(config)
         self.llm_response_handler = LLMResponseHandler()
         self.json_response_handler = JsonResponseHandler()
         self.rag_similarity_check = RAGSimilarityCheck(config)
         self.topic_reader = TopicReaderHandler(config)
 
-        # Command execution with ROS topic awareness
+        # Command execution
         self.command_execution = CommandExecution(topic_reader_handler=self.topic_reader)
 
         # State management
@@ -120,19 +120,29 @@ class NativaGPT:
         self.listening_timer = None
         self.text_mode = True
 
-        # Thread pool for parallel operations
+        # Thread pool
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="nativa")
 
         # Build trigger pattern
         self._build_trigger_pattern()
 
-        # Initialize TTS directories
-        if self.use_tts and self.tts_handler:
-            try:
-                self.tts_handler.set_output_dir()
-                self.tts_handler.set_speakers_dir()
-            except Exception:
-                pass
+        # ================================================================
+        # CRITICAL FIX: DO NOT CREATE STT/TTS HANDLERS HERE!
+        # They will be created lazily when needed
+        # ================================================================
+        self.stt_handler = None
+        self.tts_handler = None
+
+        # Log configuration status
+        if self.use_tts:
+            logger.info("✓ TTS enabled in config (will initialize on demand)")
+        else:
+            logger.info("✗ TTS disabled in config")
+
+        if self.use_stt:
+            logger.info("✓ STT enabled in config (will initialize when entering voice mode)")
+        else:
+            logger.info("✗ STT disabled in config")
 
         # --- MCP Initialization ---
         self.mcp_loop = None
@@ -146,10 +156,11 @@ class NativaGPT:
         for server_name, server_info in self.mcp_servers.items():
             host_path = server_info.get("host")
             if host_path:
+                # Expand home directory
+                host_path = os.path.expanduser(host_path)
                 self.mcp_server_hosts.append(host_path)
 
-        # Setup MCP infrastructure regardless of initial enabled state
-        # This allows toggling ON later even if it starts OFF
+        # Setup MCP infrastructure
         if self.mcp_server_hosts:
             try:
                 self.mcp_loop = AsyncLoopThread()
@@ -159,82 +170,68 @@ class NativaGPT:
                 self.mcp_loop.run_coroutine(
                     self.mcp_client.connect_to_server(self.mcp_server_hosts)
                 )
-                logger.info(f"MCP infrastructure ready with {len(self.mcp_server_hosts)} servers")
+                logger.info(f"✓ MCP infrastructure ready with {len(self.mcp_server_hosts)} server(s)")
             except Exception as e:
                 logger.error(f"Failed to initialize MCP infrastructure: {e}")
+                import traceback
+                traceback.print_exc()
                 self.mcp = False
         else:
-            logger.warning("No MCP servers configured. Toggling will be disabled.")
+            logger.info("ℹ No MCP servers configured")
             self.mcp = False
 
-        # --- Keyboard Listener for Toggle ---
-        self.keyboard_listener = None
-        if HAS_PYNPUT:
-            self._start_keyboard_listener()
-
-        logger.info(f"NativaGPT initialized. MCP Mode is currently: {'ON' if self.mcp else 'OFF'}")
-
-    def _start_keyboard_listener(self):
-        """Starts a background listener for key presses."""
-        def on_release(key):
-            try:
-                # CHECK FOR F9 KEY TO TOGGLE MCP
-                if key == keyboard.Key.f9:
-                    self._toggle_mcp_mode()
-            except Exception as e:
-                logger.error(f"Key error: {e}")
-
-        self.keyboard_listener = keyboard.Listener(on_release=on_release)
-        self.keyboard_listener.start()
-        logger.info("Hotkeys active: Press [F9] to toggle MCP Mode")
+        logger.info(f"NativaGPT v2.2 initialized successfully!")
+        logger.info(f"Mode: {'MCP' if self.mcp else 'Standard'} | Input: {'Text' if self.text_mode else 'Voice'}")
 
     def _toggle_mcp_mode(self):
-        """Toggles the MCP boolean flag."""
+        """Toggle MCP on/off."""
         if not self.mcp_client:
-            logger.warning("Cannot toggle MCP: Client not initialized (check config)")
+            logger.warning("⚠ Cannot toggle MCP: No servers configured")
             return
 
         self.mcp = not self.mcp
         status = "ENABLED" if self.mcp else "DISABLED"
 
-        # Visual feedback
-        logger.info(f"\n{'='*40}")
-        logger.info(f"   MCP MODE NOW: {status}")
-        logger.info(f"{'='*40}\n")
-
-        # Reset prompt if sitting at input
-        if self.text_mode:
-            logger.info("Type /quit to exit, /voice for voice mode, /mcp to toggle MCP mode.")
-            sys.stdout.write("Insert prompt: ")
-            sys.stdout.flush()
+        logger.info(f"\n{'='*50}")
+        logger.info(f"   MCP MODE: {status}")
+        logger.info(f"{'='*50}")
 
     def _build_trigger_pattern(self):
         """Build optimized regex pattern for trigger detection."""
         if not self.trigger_commands:
             return
 
-        # Pre-process triggers for faster matching
         self._trigger_words_sets = []
         for trigger in self.trigger_commands:
             words = set(trigger.lower().split())
             self._trigger_words_sets.append(words)
 
     def detected_trigger(self, content: str) -> bool:
-        if not content or not self._trigger_words_sets: return False
+        if not content or not hasattr(self, '_trigger_words_sets') or not self._trigger_words_sets:
+            return False
         words = set(char.lower() for char in content if char.isalnum() or char.isspace())
         cleaned = ''.join(words).split()
         content_words = set(cleaned)
         for trigger_words in self._trigger_words_sets:
-            if trigger_words.issubset(content_words): return True
+            if trigger_words.issubset(content_words):
+                return True
         return False
 
     def start_active_listening(self):
         self.is_actively_listening = True
-        self.listening_timer = threading.Timer(self.active_listening_timeout, self.stop_active_listening)
+        self.listening_timer = threading.Timer(
+            self.active_listening_timeout,
+            self.stop_active_listening
+        )
         self.listening_timer.start()
-        if self.use_tts and self.tts_handler:
-            try: self.tts_handler.send_tts_prompt(self.listening_msg)
-            except: pass
+
+        # Use TTS if available
+        if self.tts_handler and self.listening_msg:
+            try:
+                self.tts_handler.send_tts_prompt(self.listening_msg)
+            except Exception as e:
+                logger.warning(f"TTS failed: {e}")
+
         logger.info("Active listening started")
 
     def stop_active_listening(self):
@@ -244,18 +241,67 @@ class NativaGPT:
             self.listening_timer = None
         logger.info("Active listening stopped")
 
-    # ---------------------- Core processing (Optimized) ----------------------
+    # ====================== LAZY HANDLER CREATION ======================
+
+    def _ensure_tts_handler(self):
+        """Create TTS handler on-demand."""
+        if self.tts_handler is not None:
+            return True
+
+        if not self.use_tts:
+            logger.warning("⚠ TTS is disabled in config")
+            return False
+
+        try:
+            from NativaGPT.lib.text_to_speech.tts_prompt_handler import TTSPromptHandler
+            logger.info("Creating TTS handler...")
+            self.tts_handler = TTSPromptHandler(self.config)
+            logger.info("✓ TTS handler created successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create TTS handler: {e}")
+            self.use_tts = False
+            return False
+
+    def _ensure_stt_handler(self):
+        """Create STT handler on-demand."""
+        if self.stt_handler is not None:
+            return True
+
+        if not self.use_stt:
+            logger.warning("⚠ STT is disabled in config")
+            return False
+
+        try:
+            from NativaGPT.lib.speech_to_text.stt_prompt_handler import STTPromptHandler
+            logger.info("Creating STT handler for voice mode...")
+            self.stt_handler = STTPromptHandler(self.config)
+            logger.info("✓ STT handler created successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create STT handler: {e}")
+            import traceback
+            traceback.print_exc()
+            self.use_stt = False
+            return False
+
+    # ====================== CORE PROCESSING ======================
 
     def _reset_interaction_state(self):
         self._last_topic_context = None
         if hasattr(self.topic_reader, "clear_history"):
-            try: self.topic_reader.clear_history()
-            except: pass
-        try: self.llm_handler.cleanup()
-        except: pass
+            try:
+                self.topic_reader.clear_history()
+            except:
+                pass
+        try:
+            self.llm_handler.cleanup()
+        except:
+            pass
 
     def _format_rag_knowledge(self, retrieved_knowledge: Any) -> str:
-        if isinstance(retrieved_knowledge, str): return retrieved_knowledge
+        if isinstance(retrieved_knowledge, str):
+            return retrieved_knowledge
         if isinstance(retrieved_knowledge, list):
             output = StringIO()
             for i, item in enumerate(retrieved_knowledge, 1):
@@ -265,25 +311,26 @@ class NativaGPT:
 
     def _build_enhanced_prompt(self, prompt: str, rag_knowledge: Optional[str]) -> str:
         output = StringIO()
-        if self.setup_prompt: output.write(self.setup_prompt + "\n\n")
+        if self.setup_prompt:
+            output.write(self.setup_prompt + "\n\n")
         output.write(f"The user input is: {prompt}\n\n")
-        if rag_knowledge: output.write(f"Retrieved RAG knowledge:\n{rag_knowledge}")
+        if rag_knowledge:
+            output.write(f"Retrieved RAG knowledge:\n{rag_knowledge}")
         return output.getvalue()
 
     def _process_text_pipeline_api(self, prompt: str):
-        """Optimized API pipeline with parallel context collection."""
+        """Standard LLM pipeline."""
         self._reset_interaction_state()
-        logger.info("Collecting context and sending to LLM...")
+        logger.info("Processing with standard LLM pipeline...")
 
         try:
-            rag_knowledge = self.rag_similarity_check.get_relevant_knowledge(prompt)
+            rag_knowledge = self.rag_similarity_check.retrieve(prompt)
             enhanced_prompt = self._build_enhanced_prompt(prompt, rag_knowledge)
             parsed_response = self.llm_handler.send_to_llm(enhanced_prompt)
 
             if not parsed_response or not parsed_response.get("success", False):
                 logger.error("LLM API failed")
                 return
-            logger.info("LLM responded successfully")
 
         except Exception as e:
             logger.error(f"LLM request failed: {e}")
@@ -291,23 +338,25 @@ class NativaGPT:
 
         response_text = parsed_response.get("text_content", "")
         json_strings = parsed_response.get("json_strings", [])
-        logger.info(f"Response: {response_text}")
 
-        if self.use_tts and response_text and self.tts_handler:
-            try: self.tts_handler.send_tts_prompt(response_text)
-            except Exception as e: logger.warning(f"TTS failed: {e}")
+        if response_text:
+            logger.info(f"Response: {response_text}")
+
+        # Use TTS if enabled and available
+        if self.use_tts and response_text:
+            if self._ensure_tts_handler():
+                try:
+                    self.tts_handler.send_tts_prompt(response_text)
+                except Exception as e:
+                    logger.warning(f"TTS failed: {e}")
 
         if json_strings:
             self._execute_agentic_loop(json_strings, max_iterations=self.max_agentic_iterations)
-        else:
-            logger.info("No commands in response")
 
         self._reset_interaction_state()
-        logger.info("Pipeline completed")
 
     def _execute_agentic_loop(self, json_strings: List[str], max_iterations: int = 5):
-        # [Logic remains identical to previous version]
-        # Using abbreviated version for brevity
+        """Execute commands with feedback loop."""
         iteration = 0
         executed_fingerprints = set()
 
@@ -315,180 +364,355 @@ class NativaGPT:
             iteration += 1
             try:
                 functions = self.json_response_handler.check_all_functions(json_strings)
-                if not functions: break
+                if not functions:
+                    break
                 commands = self.json_response_handler.get_function_command(functions)
 
                 fp = sha1("|".join(sorted(json_strings)).encode("utf-8")).hexdigest()
-                if fp in executed_fingerprints: break
+                if fp in executed_fingerprints:
+                    break
 
                 commands_output = self.command_execution.get_commands_output(commands)
                 executed_fingerprints.add(fp)
 
-                # ... Logging ...
+                logger.info(f"Iteration {iteration}: Executed {len(commands)} command(s)")
 
                 feedback_response = self.llm_handler.send_output_to_llm(commands_output)
-                if not feedback_response or not feedback_response.get("success", False): break
+                if not feedback_response or not feedback_response.get("success", False):
+                    break
 
                 new_json_strings = feedback_response.get("json_strings", [])
-                if new_json_strings: json_strings = new_json_strings
-                else: break
-            except Exception: break
+                if new_json_strings:
+                    json_strings = new_json_strings
+                else:
+                    break
+            except Exception as e:
+                logger.error(f"Agentic loop error: {e}")
+                break
 
-    # ---------------------- Mode loops (Optimized) ----------------------
-
-    def push_to_talk_once(self):
-        if not self.stt_handler: return
-        logger.info("PTT: Listening...")
-        self.stt_handler.start_stt_handler()
-        try:
-            while True:
-                if self.stt_handler.process_audio():
-                    stt_response = self.stt_handler.get_response()
-                    if stt_response and "transcription" in stt_response:
-                        transcription = stt_response["transcription"]
-                        logger.info(f"PTT> {transcription}")
-                        self._process_text_pipeline_api(transcription)
-                        break
-                time.sleep(0.01)
-        finally:
-            self.stt_handler.stop_stt_handler()
+    # ====================== MODE LOOPS ======================
 
     def _voice_mode_loop(self):
-        """Voice mode with wake word detection."""
-        if not self.stt_handler: return
+        """Voice mode with lazy STT initialization."""
+        if not self.use_stt:
+            logger.warning("⚠ Voice mode requested but STT is disabled in config")
+            self.text_mode = True
+            return
 
-        self.stt_handler.start_stt_handler()
+        # Create STT handler NOW (not during __init__)
+        if not self._ensure_stt_handler():
+            logger.error("Cannot enter voice mode without STT")
+            self.text_mode = True
+            return
+
+        # Start listening
         try:
-            logger.info("Voice mode: Listening for wake word (type /text to exit)")
-            while True:
+            self.stt_handler.start_stt_handler()
+            logger.info("🎤 Voice mode active. Listening for wake word...")
+            logger.info("Commands: /text (exit voice) | /mcp (toggle tools)")
+
+            while not self.text_mode:
+                # Check for keyboard commands
                 if self._stdin_ready():
                     user_cmd = sys.stdin.readline().strip()
                     if self._handle_meta_command(user_cmd):
-                        if self.text_mode: break
+                        if self.text_mode:
+                            break
                         continue
 
+                # Process audio
                 if self.stt_handler.process_audio():
                     stt_response = self.stt_handler.get_response()
                     if stt_response and "transcription" in stt_response:
-                        transcription = stt_response["transcription"]
+                        transcription = stt_response["transcription"].strip()
+                        if transcription:
+                            logger.info(f"🎤 Heard: {transcription}")
 
-                        if not self.is_actively_listening:
-                            if self.detected_trigger(transcription):
-                                logger.info("Wake word detected!")
+                            # Check for wake word
+                            if not self.is_actively_listening and self.detected_trigger(transcription):
+                                logger.info("✓ Wake word detected!")
                                 self.start_active_listening()
-                        else:
-                            # Logic branching based on MCP mode
-                            logger.info(f"Processing: {transcription} (MCP: {self.mcp})")
-                            if self.mcp:
-                                try:
-                                    # Voice response via MCP
-                                    resp = self.mcp_loop.run_coroutine(self.mcp_client.process_query(transcription))
-                                    logger.info(f"MCP Response: {resp}")
-                                    if self.use_tts and self.tts_handler:
-                                        self.tts_handler.send_tts_prompt(resp)
-                                except Exception as e:
-                                    logger.error(f"MCP Error: {e}")
-                            else:
-                                self._process_text_pipeline_api(transcription)
 
-                            time.sleep(0.5)
+                            # Process if listening
+                            if self.is_actively_listening or not self.trigger_commands:
+                                mode = "MCP" if self.mcp else "Standard"
+                                logger.info(f"Processing in {mode} mode: {transcription}")
+
+                                if self.mcp and self.mcp_client:
+                                    # MCP mode
+                                    try:
+                                        resp = self.mcp_loop.run_coroutine(
+                                            self.mcp_client.process_query(transcription)
+                                        )
+                                        logger.info(f"MCP Response: {resp}")
+
+                                        # TTS response
+                                        if self.use_tts and self._ensure_tts_handler():
+                                            self.tts_handler.send_tts_prompt(resp)
+                                    except Exception as e:
+                                        logger.error(f"MCP Error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                                else:
+                                    # Standard mode
+                                    self._process_text_pipeline_api(transcription)
+
+                time.sleep(0.01)
+
+        except Exception as e:
+            logger.error(f"Error in voice mode: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
-            self.stt_handler.stop_stt_handler()
+            if self.stt_handler:
+                try:
+                    self.stt_handler.stop_stt_handler()
+                except Exception as e:
+                    logger.error(f"Error stopping STT: {e}")
+            logger.info("Exited voice mode")
 
     def _text_mode_loop(self):
         """Text mode loop."""
         while True:
-            # Prompt shows current mode state
             mode_indicator = "[MCP]" if self.mcp else "[STD]"
-            logger.info("Type /quit to exit, /voice for voice mode, /mcp to toggle MCP mode.")
-            user_input = input(f"{mode_indicator} Insert prompt: ").strip()
+            logger.info("Commands: /quit | /voice | /text | /mcp | /mode [mcp|standard|voice|text] | /help")
+
+            try:
+                user_input = input(f"{mode_indicator} Insert prompt: ").strip()
+            except EOFError:
+                raise KeyboardInterrupt
+            except KeyboardInterrupt:
+                raise
 
             if self._handle_meta_command(user_input):
                 if not self.text_mode:
                     break
                 continue
+
             if not user_input:
                 continue
 
             if not self.mcp:
+                # Standard LLM mode
                 self._process_text_pipeline_api(user_input)
             else:
-                # Run the async MCP query using the background loop
+                # MCP tool mode
                 try:
                     logger.info("Querying MCP...")
                     response = self.mcp_loop.run_coroutine(
                         self.mcp_client.process_query(user_input)
                     )
                     logger.info(f"\n{response}\n")
+
+                    # TTS if available
+                    if self.use_tts and self._ensure_tts_handler():
+                        try:
+                            self.tts_handler.send_tts_prompt(response)
+                        except Exception as e:
+                            logger.warning(f"TTS failed: {e}")
+
                 except Exception as e:
                     logger.error(f"MCP query failed: {e}")
-                    self._process_text_pipeline_api(user_input) # Fallback
+                    import traceback
+                    traceback.print_exc()
+                    # Fallback
+                    logger.info("Falling back to standard mode...")
+                    self._process_text_pipeline_api(user_input)
 
     def _handle_meta_command(self, text: str) -> bool:
         """Handle meta commands."""
-        if not text.startswith("/"): return False
-        parts = text[1:].split()
-        cmd = parts[0].lower() if parts else ""
+        if not text.startswith("/"):
+            return False
 
-        if cmd in ("quit", "exit"): raise KeyboardInterrupt
-        if cmd == "voice":
-            self.text_mode = False
-            logger.info("🎙️  Voice mode ON")
+        cmd = text[1:].strip().lower()
+        if not cmd:
             return True
+
+        if cmd in ("quit", "exit", "q"):
+            raise KeyboardInterrupt
+
+        if cmd == "voice":
+            if not self.use_stt:
+                logger.warning("⚠ Voice mode disabled in config (set use_stt: true)")
+                return True
+            self.text_mode = False
+            logger.info("✓ Switching to VOICE mode")
+            return True
+
         if cmd == "text":
             self.text_mode = True
-            logger.info("⌨️  Text mode ON")
+            logger.info("✓ Switched to TEXT mode")
             return True
-        if cmd == "ptt":
-            self.push_to_talk_once()
-            return True
-        if cmd == "mcp":
+
+        if cmd in ("mcp", "tool", "tools"):
             self._toggle_mcp_mode()
             return True
 
+        # Unified /mode command
+        if cmd.startswith("mode "):
+            mode = cmd[5:].strip().lower()
+
+            if mode == "mcp":
+                if self.mcp_client:
+                    self.mcp = True
+                    logger.info("✓ MCP TOOL MODE ENABLED")
+                else:
+                    logger.warning("⚠ MCP not available (no servers configured)")
+
+            elif mode in ("standard", "std"):
+                self.mcp = False
+                logger.info("✓ STANDARD LLM MODE ENABLED")
+
+            elif mode == "voice":
+                if self.use_stt:
+                    self.text_mode = False
+                    logger.info("✓ VOICE MODE ENABLED (will activate next)")
+                else:
+                    logger.warning("⚠ Voice mode disabled (set use_stt: true in config)")
+
+            elif mode == "text":
+                self.text_mode = True
+                logger.info("✓ TEXT MODE ENABLED")
+
+            else:
+                logger.info("Available: /mode mcp | standard | voice | text")
+            return True
+
+        if cmd in ("help", "h", "?"):
+            logger.info(f"""
+╔══════════════════════════════════════════════════════╗
+║             NativaGPT v2.2 - Commands                ║
+╚══════════════════════════════════════════════════════╝
+
+Mode Switching:
+  /mode mcp          - Enable MCP tools (ROS, weather, etc.)
+  /mode standard     - Enable standard LLM mode
+  /mode voice        - Enable voice input/output
+  /mode text         - Enable keyboard input
+
+Quick Commands:
+  /quit              - Exit NativaGPT
+  /voice             - Switch to voice mode
+  /text              - Switch to text mode
+  /mcp               - Toggle MCP on/off
+  /help              - Show this help
+
+Current Status:
+  STT (voice):  {'✓ enabled' if self.use_stt else '✗ disabled'}
+  TTS (speech): {'✓ enabled' if self.use_tts else '✗ disabled'}
+  MCP (tools):  {'✓ enabled' if self.mcp else '✗ disabled'}
+  Mode:         {'voice' if not self.text_mode else 'text'}
+
+Version: 2.2 (Fixed)
+            """)
+            return True
+
+        logger.warning(f"⚠ Unknown command: /{cmd}")
+        logger.info("Type /help for available commands")
         return True
 
     def _stdin_ready(self) -> bool:
+        """Check if stdin has data ready."""
         return select.select([sys.stdin], [], [], 0.0)[0] != []
+
+    # ====================== MAIN LOOP ======================
 
     def start(self):
         """Main loop."""
-        logger.info("Starting NativaGPT v2.1...")
-        while True:
+        logger.info("="*60)
+        logger.info("Starting NativaGPT v2.2 (Fixed Version)")
+        logger.info("="*60)
+        logger.info(f"STT:  {'✓ enabled' if self.use_stt else '✗ disabled'}")
+        logger.info(f"TTS:  {'✓ enabled' if self.use_tts else '✗ disabled'}")
+        logger.info(f"MCP:  {'✓ enabled' if self.mcp else '✗ disabled'}")
+        logger.info(f"Mode: {'text' if self.text_mode else 'voice'}")
+        logger.info("="*60)
+        logger.info("Type /help for available commands")
+        logger.info("")
+
+        try:
+            while True:
+                try:
+                    if not self.text_mode and self.use_stt:
+                        self._voice_mode_loop()
+                    else:
+                        self._text_mode_loop()
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in main loop: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    time.sleep(1)
+
+        except KeyboardInterrupt:
+            logger.info("\n")
+            logger.info("="*60)
+            logger.info("Shutting down gracefully...")
+            logger.info("="*60)
+        finally:
+            self.cleanup()
+
+    def cleanup(self):
+        """Cleanup resources."""
+        logger.info("Cleaning up resources...")
+
+        # Stop STT if running
+        if self.stt_handler:
             try:
-                if not self.text_mode:
-                    self._voice_mode_loop()
-                else:
-                    self._text_mode_loop()
-            except KeyboardInterrupt:
-                logger.info("\nShutting down...")
-                break
-            finally:
-                if self.listening_timer:
-                    self.listening_timer.cancel()
-                if self.stt_handler:
-                    self.stt_handler.stop_stt_handler()
+                self.stt_handler.stop_stt_handler()
+            except:
+                pass
+
+        # Cleanup executors
+        try:
+            self.executor.shutdown(wait=False)
+        except:
+            pass
+
+        # Cancel timers
+        if self.listening_timer:
+            try:
+                self.listening_timer.cancel()
+            except:
+                pass
+
+        # Cleanup MCP
+        if self.mcp_client and self.mcp_loop:
+            try:
+                self.mcp_loop.run_coroutine(self.mcp_client.cleanup())
+            except:
+                pass
+
+        if self.mcp_loop:
+            try:
+                self.mcp_loop.stop()
+            except:
+                pass
+
+        logger.info("✓ Cleanup completed")
 
     def __del__(self):
-        """Cleanup resources."""
+        """Cleanup on deletion."""
         try:
-            if self.keyboard_listener:
-                self.keyboard_listener.stop()
-            self.executor.shutdown(wait=False)
-            if self.listening_timer:
-                self.listening_timer.cancel()
-            if self.mcp_client and self.mcp_loop:
-                try: self.mcp_loop.run_coroutine(self.mcp_client.cleanup())
-                except: pass
-            if self.mcp_loop:
-                self.mcp_loop.stop()
+            self.cleanup()
         except:
             pass
 
 
 def main():
-    cfg_path = str(pathlib.Path(__file__).parent.parent.parent / "config" / "config_default.json")
-    config_manager = ConfigManager(config_path=cfg_path)
+    """Main entry point."""
+    # Get config path
+    script_dir = pathlib.Path(__file__).parent.parent.parent
+    cfg_path = script_dir / "config" / "config_default.json"
+
+    if not cfg_path.exists():
+        logger.error(f"Config file not found: {cfg_path}")
+        sys.exit(1)
+
+    logger.info(f"Loading config from: {cfg_path}")
+
+    config_manager = ConfigManager(config_path=str(cfg_path))
     config = config_manager.get()
 
     nativa = NativaGPT(config)

@@ -10,18 +10,29 @@ from mcp.client.stdio import stdio_client
 
 from dotenv import load_dotenv
 from NativaGPT.lib.handlers.llm_prompt_handler import LLMPromptHandler
+from NativaGPT.lib.coloring_logger import logger
 
 load_dotenv()
 
 
 class MCPClient:
+    """
+    Enhanced MCP Client v2.0
+
+    Key features:
+    - Multi-server support
+    - Automatic image attachment from tool outputs
+    - Better error handling
+    - ROS command execution support
+    """
+
     def __init__(self, llm_handler: Optional[LLMPromptHandler] = None):
         # Store multiple server sessions
         self.servers: List[Dict[str, Any]] = []
         self.exit_stack = AsyncExitStack()
 
         self.llm_handler = llm_handler
-        print("[INFO] Using NativaGPT LLM handler for better performance")
+        logger.info("MCP Client initialized with NativaGPT LLM handler")
 
     async def connect_to_server(self, server_script_list: List[str]):
         """Connect to multiple MCP servers (python or node)."""
@@ -30,26 +41,48 @@ class MCPClient:
 
             # Validate file exists
             if not os.path.exists(server_script_path):
-                print(f"[ERROR] Server script not found: {server_script_path}")
+                logger.error(f"Server script not found: {server_script_path}")
                 continue
 
             is_python = server_script_path.endswith(".py")
             is_js = server_script_path.endswith(".js")
-            if not (is_python or is_js):
-                print(f"Skipping invalid server script: {server_script_path}")
+            is_bash = server_script_path.endswith(".sh")
+
+            if not (is_python or is_js or is_bash):
+                logger.warning(f"Skipping invalid server script: {server_script_path}")
                 continue
 
-            print(f"[INFO] Connecting to server: {server_script_path}")
+            logger.info(f"Connecting to server: {server_script_path}")
             try:
-                command = "python" if is_python else "node"
+                # Determine command based on file type
+                if is_bash:
+                    command = "bash"
+                elif is_python:
+                    command = "python"
+                else:  # is_js
+                    command = "node"
 
-                # Get current environment (includes ROS if sourced)
+                # CRITICAL: Pass full environment including ROS variables
                 env = os.environ.copy()
+
+                # Ensure key ROS variables are present
+                ros_vars = ['ROS_DISTRO', 'ROS_ROOT', 'ROS_PACKAGE_PATH',
+                           'ROS_MASTER_URI', 'PYTHONPATH', 'LD_LIBRARY_PATH',
+                           'CMAKE_PREFIX_PATH', 'PKG_CONFIG_PATH', 'PATH']
+
+                missing_ros = []
+                for var in ['ROS_DISTRO', 'ROS_ROOT']:
+                    if var not in env:
+                        missing_ros.append(var)
+
+                if missing_ros:
+                    logger.warning(f"Missing ROS environment variables: {missing_ros}")
+                    logger.warning("Did you source ROS? Run: source /opt/ros/noetic/setup.bash")
 
                 server_params = StdioServerParameters(
                     command=command,
                     args=[server_script_path],
-                    env=env
+                    env=env  # Pass full environment to subprocess
                 )
 
                 stdio_transport = await self.exit_stack.enter_async_context(
@@ -76,17 +109,19 @@ class MCPClient:
                     "tools": tools
                 })
 
-                print(f"\nConnected to '{server_name}' with tools: {[tool.name for tool in tools]}")
+                logger.info(f"✓ Connected to '{server_name}' with {len(tools)} tools:")
+                for tool in tools:
+                    logger.info(f"  - {tool.name}: {tool.description[:60]}...")
 
             except Exception as e:
-                print(f"Failed to connect to {server_script_path}: {e}")
+                logger.error(f"Failed to connect to {server_script_path}: {e}")
                 continue
 
         if not self.servers:
             raise RuntimeError("No MCP servers could be connected")
 
         total_tools = sum(len(server["tools"]) for server in self.servers)
-        print(f"\nTotal servers: {len(self.servers)}, Total tools: {total_tools}")
+        logger.info(f"\n✓ Total servers: {len(self.servers)}, Total tools: {total_tools}")
 
     def _get_all_tools(self) -> List[Any]:
         """Get flattened list of all tools from all servers."""
@@ -141,7 +176,7 @@ class MCPClient:
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
-            print(f"[ERROR] LLM call failed:\n{error_details}")
+            logger.error(f"LLM call failed:\n{error_details}")
             return f"Model error: {str(e)}"
 
     @staticmethod
@@ -161,6 +196,51 @@ class MCPClient:
         except Exception:
             return "No result"
 
+    def _extract_images_from_tool_output(self, tool_output: str) -> List[str]:
+        """
+        Extract image paths from tool output.
+        Looks for JSON with 'image_path' or common image file paths.
+        """
+        images = []
+
+        # Try to parse as JSON first
+        try:
+            data = json.loads(tool_output)
+            if isinstance(data, dict):
+                # Look for image_path key
+                if 'image_path' in data:
+                    img_path = data['image_path']
+                    if img_path and os.path.exists(img_path):
+                        images.append(img_path)
+                        logger.info(f"Found image from JSON: {img_path}")
+
+                # Look for files array
+                if 'files' in data and isinstance(data['files'], list):
+                    for f in data['files']:
+                        if f and os.path.exists(f) and self._is_image_file(f):
+                            images.append(f)
+                            logger.info(f"Found image from files: {f}")
+        except json.JSONDecodeError:
+            # Not JSON, try regex for file paths
+            import re
+            # Match common image paths
+            image_pattern = r'([/\w\-\.]+\.(?:jpg|jpeg|png|gif|bmp|webp))'
+            matches = re.findall(image_pattern, tool_output, re.IGNORECASE)
+
+            for match in matches:
+                if os.path.exists(match):
+                    images.append(match)
+                    logger.info(f"Found image from regex: {match}")
+
+        return images
+
+    @staticmethod
+    def _is_image_file(path: str) -> bool:
+        """Check if file is an image based on extension."""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
+        _, ext = os.path.splitext(path.lower())
+        return ext in image_extensions
+
     def _build_tool_spec_prompt(self) -> str:
         """Build a JSON description of all tools from all servers for the LLM."""
         tools_info = []
@@ -176,39 +256,48 @@ class MCPClient:
         tools_json = json.dumps(tools_info, indent=2)
 
         system_prompt = f"""
-You are a tool-using assistant. You have access to the following tools,
-described as a JSON array of objects (name, description, input_schema):
+You are a tool-using assistant with access to powerful tools including ROS commands, image capture, and more.
 
+Available tools (JSON format):
 {tools_json}
 
-For each user query, you must decide ONE of two actions:
+For each user query, respond with ONE of these actions:
 
-1) Answer directly with your own knowledge:
-   Respond EXACTLY as a single JSON object:
+1) Answer directly:
    {{
      "action": "final_answer",
-     "answer": "<your answer in natural language>"
+     "answer": "<your natural language answer>"
    }}
 
-2) Call one of the tools above:
-   Respond EXACTLY as a single JSON object:
+2) Call a tool:
    {{
      "action": "call_tool",
-     "tool": "<tool name>",
-     "args": {{ ... arguments matching the input_schema ... }}
+     "tool": "<exact tool name from list>",
+     "args": {{ <arguments matching input_schema> }}
    }}
 
-Rules:
-- The JSON must be valid. No trailing commas.
-- Do NOT include any extra keys.
-- Do NOT add any text before or after the JSON.
-- 'tool' must be one of the tool names listed above.
+IMPORTANT RULES:
+- Output ONLY valid JSON (no text before/after, no trailing commas)
+- 'tool' must exactly match a name from the list above
+- 'args' must match the tool's input_schema
+- For ROS topics: use full topic names like "/camera/color/image_raw"
+- For ROS commands: use complete commands like "rostopic list" or "rosnode info /node_name"
+
+EXAMPLES:
+User: "Show me what the camera sees"
+Response: {{"action": "call_tool", "tool": "capture_and_analyze_image", "args": {{"topic_name": "/camera/color/image_raw"}}}}
+
+User: "List all ROS topics"
+Response: {{"action": "call_tool", "tool": "list_topics", "args": {{}}}}
+
+User: "What's 2+2?"
+Response: {{"action": "final_answer", "answer": "4"}}
 """
         return system_prompt.strip()
 
     async def process_query(self, query: str) -> str:
         """
-        Let the LLM decide whether to call MCP tools from any connected server.
+        Process user query with automatic tool selection and image attachment.
         """
         if not self.servers:
             return "Error: No MCP servers connected."
@@ -219,13 +308,15 @@ Rules:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ]
+
+        logger.info("Planning action...")
         plan_raw = self._run_model(plan_messages)
 
         # Try to parse JSON plan
         try:
             plan = self._parse_plan_json(plan_raw)
-        except json.JSONDecodeError:
-            # If can't parse, return the raw response
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse plan as JSON: {e}")
             return plan_raw
 
         action = plan.get("action")
@@ -233,17 +324,16 @@ Rules:
         # Get list of all valid tool names
         all_tool_names = [tool.name for tool in self._get_all_tools()]
 
-        # Handle case where model puts tool name as action (common mistake)
+        # Handle common mistake where model uses tool name as action
         if action not in ["final_answer", "call_tool"]:
-            # Check if action is actually a tool name
             if action in all_tool_names:
+                logger.info(f"Fixed plan: model used tool name '{action}' as action")
                 plan = {
                     "action": "call_tool",
                     "tool": action,
                     "args": plan.get("args", {})
                 }
                 action = "call_tool"
-                print(f"[DEBUG] Fixed plan: model used tool name '{plan['tool']}' as action")
             elif "tool" in plan or "args" in plan:
                 plan = {
                     "action": "call_tool",
@@ -254,7 +344,7 @@ Rules:
             else:
                 return f"Unexpected plan from model: {json.dumps(plan, indent=2)}"
 
-        # 2A) No tool: final answer directly
+        # 2A) Direct answer
         if action == "final_answer":
             answer = plan.get("answer", "")
             return answer or "(no answer provided)"
@@ -272,56 +362,65 @@ Rules:
             if not server:
                 return f"Tool '{tool_name}' not found in any connected server"
 
-            # Call MCP tool on the appropriate server
+            # Call MCP tool
             try:
-                print(f"[INFO] Calling tool: {tool_name} with args: {args}")
+                logger.info(f"Calling tool: {tool_name}")
+                logger.info(f"Arguments: {json.dumps(args, indent=2)}")
+
                 result = await server["session"].call_tool(tool_name, args)
                 tool_output = self._extract_tool_text(result)
-                print(f"[INFO] Tool completed successfully")
 
-                # Check if tool output contains image paths
-                images_to_send = []
-                if "image_path" in tool_output:
-                    try:
-                        # Try to parse JSON output
-                        output_data = json.loads(tool_output)
-                        img_path = output_data.get("image_path")
-                        if img_path and os.path.exists(img_path):
-                            images_to_send.append(img_path)
-                            print(f"[INFO] Attaching image: {img_path}")
-                    except:
-                        pass
+                logger.info(f"Tool output length: {len(tool_output)} chars")
+
+                # CRITICAL: Extract images from tool output
+                images_to_send = self._extract_images_from_tool_output(tool_output)
+
+                if images_to_send:
+                    logger.info(f"✓ Found {len(images_to_send)} image(s) to attach to LLM")
+                else:
+                    logger.info("No images found in tool output")
 
             except Exception as e:
                 import traceback
-                print(f"[ERROR] Tool execution failed:\n{traceback.format_exc()}")
-                return f"Error calling tool '{tool_name}' on server '{server['name']}': {e}"
+                logger.error(f"Tool execution failed:\n{traceback.format_exc()}")
+                return f"Error calling tool '{tool_name}': {e}"
 
-            # 3) Ask LLM to summarize tool output (with images if available)
+            # 3) Ask LLM to summarize tool output WITH IMAGES
             answer_system_prompt = """
-You are a helpful assistant. The user asked a question, and an external tool
-was called to get relevant data. Your job is to explain the tool output in
-clear, concise natural language for the user.
+You are a helpful assistant analyzing tool outputs. The user asked a question and an external tool provided data.
+
+Your job:
+1. If images are attached, describe what you see in them
+2. Explain the tool's findings in clear, natural language
+3. Answer the user's original question based on the data
+
+Be specific and informative.
 """
             answer_messages = [
                 {"role": "system", "content": answer_system_prompt.strip()},
                 {
                     "role": "user",
                     "content": (
-                        f"User question:\n{query}\n\n"
+                        f"User question: {query}\n\n"
                         f"Tool used: {tool_name}\n"
                         f"Tool arguments: {json.dumps(args)}\n\n"
-                        f"Tool raw output:\n{tool_output}\n\n"
-                        "Please summarize this for the user."
+                        f"Tool output:\n{tool_output}\n\n"
+                        "Please analyze and explain this for the user."
                     ),
                 },
             ]
 
-            # Send with images if available
-            final_answer = self._run_model(answer_messages, images=images_to_send if images_to_send else None)
+            # CRITICAL: Send WITH images if available
+            logger.info("Generating final answer with LLM...")
+            if images_to_send:
+                logger.info(f"Attaching {len(images_to_send)} images to LLM context")
+                final_answer = self._run_model(answer_messages, images=images_to_send)
+            else:
+                final_answer = self._run_model(answer_messages)
+
             return final_answer
 
-        # 2C) Unknown action
+        # Unknown action
         return f"Unexpected plan from model: {plan_raw}"
 
     @staticmethod
@@ -329,7 +428,7 @@ clear, concise natural language for the user.
         """Parse the model's plan as JSON, handling code blocks."""
         plan_raw = plan_raw.strip()
 
-        # Remove code block fences
+        # Remove markdown code blocks
         if plan_raw.startswith("```"):
             lines = plan_raw.splitlines()
             lines = [ln for ln in lines if not ln.strip().startswith("```")]
@@ -347,23 +446,44 @@ clear, concise natural language for the user.
 
     async def cleanup(self):
         """Cleanup resources."""
+        logger.info("Cleaning up MCP client...")
         await self.exit_stack.aclose()
         if self.llm_handler:
             self.llm_handler.cleanup()
 
 
 async def main():
+    """Test the MCP client."""
     if len(sys.argv) < 2:
-        print("Usage: python client.py <server_script1> [server_script2] ...")
+        print("Usage: python mcp_client.py <server_script1> [server_script2] ...")
         sys.exit(1)
 
-    client = MCPClient()
+    # Create LLM handler
+    from NativaGPT.lib.config_manager import ConfigManager
+    config_path = "config/config_default.json"
+    config_manager = ConfigManager(config_path)
+    config = config_manager.get()
+
+    from NativaGPT.lib.handlers.llm_prompt_handler import LLMPromptHandler
+    llm_handler = LLMPromptHandler(config)
+
+    client = MCPClient(llm_handler)
     try:
         await client.connect_to_server(sys.argv[1:])
 
-        # Test query
-        response = await client.process_query("What's the weather in Florida?")
-        print(f"\nResponse: {response}")
+        # Test queries
+        queries = [
+            "List all available ROS topics",
+            "Show me what the robot's camera sees",
+            "What's the weather in Florida?"
+        ]
+
+        for query in queries:
+            print(f"\n{'='*60}")
+            print(f"Query: {query}")
+            print('='*60)
+            response = await client.process_query(query)
+            print(f"Response: {response}")
 
     finally:
         await client.cleanup()
