@@ -1,0 +1,15 @@
+# Dependências do NativaGPT
+openai
+anthropic
+python-dotenv
+requests
+pydub
+fastmcp
+
+# Dependências para compatibilidade ROS no Venv
+rospkg
+catkin_pkg
+defusedxml
+netifaces
+numpy
+gnupg

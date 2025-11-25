@@ -13,10 +13,12 @@ from NativaGPT.lib.coloring_logger import logger
 from datetime import datetime
 import uuid
 
+# Se necessário, ajuste este caminho de importação:
 from NativaGPT.lib.config_manager import ConfigManager
 
 load_dotenv()
 
+# Assume que a chave da API está configurada nas variáveis de ambiente
 API_KEY = os.getenv('API_KEY')
 
 try:
@@ -27,14 +29,12 @@ except ImportError:
 
 class LLMPromptHandler:
     """
-    LLM Prompt Handler v3.1 - IMAGE UPLOAD OPTIMIZED
-
+    LLM Prompt Handler v3.2 - MULTI-IMAGE SUPPORT (API-Specific Fix)
     Key optimizations for image handling:
-    - Lazy file opening (don't open until needed)
-    - File size checking before loading
-    - Faster multipart encoding
-    - Better error handling
-    - Performance logging
+    - Supports sending multiple images under the same 'image' field (API requirement).
+    - Lazy file opening.
+    - File size checking before loading.
+    - Parallel file loading.
     """
 
     # Class-level compiled regex patterns
@@ -53,9 +53,10 @@ class LLMPromptHandler:
     _SINGLE_QUOTE_PATTERN = re.compile(r"'([^']*)'")
 
     # Image size limits
-    MAX_IMAGE_SIZE_MB = 10  # Skip images larger than this
-    WARN_IMAGE_SIZE_KB = 500  # Warn if image is larger than this
+    MAX_IMAGE_SIZE_MB = 10
+    WARN_IMAGE_SIZE_KB = 500
 
+    # ... (O __slots__ e __init__ permanecem inalterados)
     __slots__ = (
         'config', 'endpoint', 'model', 'vision_model', 'temperature',
         'max_tokens', 'channel_id', 'thread_id', 'image_dir',
@@ -66,8 +67,6 @@ class LLMPromptHandler:
     def __init__(self, config):
         self.config = config
         llm_config = config.get("llm_config", {})
-
-        # Basic config
         self.endpoint = llm_config.get("endpoint", "")
         self.model = llm_config.get("model", "deepseek-r1:latest")
         self.vision_model = llm_config.get("vision_model", "llava:latest")
@@ -75,39 +74,25 @@ class LLMPromptHandler:
         self.max_tokens = llm_config.get("max_tokens", 2000)
         self.channel_id = llm_config.get("channel_id", "")
 
-        # Get a new thread ID if not provided
         self.thread_id = llm_config.get("thread_id", "")
         if not self.thread_id:
             self.thread_id = str(uuid.uuid4())
 
-        # Directories
         self.image_dir = "/tmp/nativa_vlm_images"
         self.generated_images_dir = "/tmp/nativa_generated_images"
         os.makedirs(self.image_dir, exist_ok=True)
         os.makedirs(self.generated_images_dir, exist_ok=True)
-
-        # Setup prompt
         self.setup_prompt = llm_config.get("model_config", {}).get("setup_prompt", "")
 
-        # Optimized connection pool
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=20,
-            max_retries=3,
-            pool_block=False
+            pool_connections=10, pool_maxsize=20, max_retries=3, pool_block=False
         )
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
-
-        # Thread pool
         self.executor = ThreadPoolExecutor(max_workers=4)
-
         self.config_manager = ConfigManager(config)
-
-        # Caches
         self._enhanced_prompt_cache = {}
-
         logger.info(f"LLM Handler was initialized. Endpoint: {self.endpoint}, Model: {self.model}")
 
     def _handle_ndjson_responses(self, response) -> Dict:
@@ -161,16 +146,16 @@ class LLMPromptHandler:
 
     def send_to_llm(self, prompt: str, images: List[str] = None) -> Dict:
         """
-        OPTIMIZED: Send to LLM with fast image handling.
+        OPTIMIZED: Send to LLM with fast image handling and multi-file support.
         """
         request_start = time.time()
+        files_to_close = [] # Lista para manter os handles abertos dos ficheiros
 
         try:
             # Build prompt (with caching)
             prompt_key = hash(prompt)
-            if prompt_key in self._enhanced_prompt_cache:
-                enhanced_prompt = self._enhanced_prompt_cache[prompt_key]
-            else:
+            enhanced_prompt = self._enhanced_prompt_cache.get(prompt_key)
+            if not enhanced_prompt:
                 enhanced_prompt = self._build_enhanced_prompt(prompt)
                 if len(self._enhanced_prompt_cache) < 100:
                     self._enhanced_prompt_cache[prompt_key] = enhanced_prompt
@@ -188,17 +173,24 @@ class LLMPromptHandler:
             files = None
             if images:
                 image_prep_start = time.time()
+                # 🔑 MODIFICAÇÃO: _prepare_images_optimized agora devolve uma lista de tuplos
                 files = self._prepare_images_optimized(images)
+
+                # Guarda os handles dos ficheiros para fechar no bloco finally
+                # O handle é o segundo elemento do tuplo interno (name, handle, mime)
+                files_to_close = [f[1][1] for f in files]
+
                 image_prep_time = (time.time() - image_prep_start) * 1000
                 logger.info(f"[IMG] Prepared {len(files)} images in {image_prep_time:.1f}ms")
 
             try:
+                # 🔑 MODIFICAÇÃO: Passamos a lista 'files' diretamente para requests
                 if files:
                     response = self.session.post(
                         self.endpoint,
                         headers=headers,
                         data=base_data,
-                        files=files,
+                        files=files, # 'files' é agora uma lista, o formato correto para múltiplas imagens no mesmo campo.
                         stream=True,
                         timeout=30  # Increased timeout for image uploads
                     )
@@ -215,13 +207,12 @@ class LLMPromptHandler:
                 response_data = self._handle_ndjson_responses(response)
 
             finally:
-                # Immediate cleanup
-                if files:
-                    for file_tuple in files.values():
-                        try:
-                            file_tuple[1].close()
-                        except:
-                            pass
+                # 🔑 CORREÇÃO CRÍTICA: Fechar todos os handles abertos
+                for file_handle in files_to_close:
+                    try:
+                        file_handle.close()
+                    except:
+                        pass
 
             if not response_data.get("success", True):
                 return response_data
@@ -234,6 +225,7 @@ class LLMPromptHandler:
         except requests.exceptions.RequestException as e:
             self._log_request_error(e)
             return {"error": f"LLM API request failed: {str(e)}", "success": False}
+
 
     def _log_request_error(self, e: requests.exceptions.RequestException) -> None:
         """Efficient error logging."""
@@ -279,31 +271,31 @@ The functions are provided separately and you can call them as needed.
 
         return ''.join(parts)
 
-    def _prepare_images_optimized(self, images: List[str]) -> Dict:
+
+    def _prepare_images_optimized(self, images: List[str]) -> List[Tuple[str, Tuple[str, Any, str]]]:
         """
-        OPTIMIZED: Fast parallel image loading with size checks.
-        This is a KEY optimization for image performance!
+        CORRIGIDO: Prepara múltiplas imagens para upload, usando a chave 'image'
+        para todos os ficheiros, no formato List[Tuple] exigido por requests.
         """
         if not images:
-            return {}
+            return []
 
-        files = {}
+        # 'files' é uma lista de tuplos: [ ('campo', (nome, handle, mime)), ... ]
+        files: List[Tuple[str, Tuple[str, Any, str]]] = []
         max_size_bytes = self.MAX_IMAGE_SIZE_MB * 1024 * 1024
         warn_size_bytes = self.WARN_IMAGE_SIZE_KB * 1024
 
-        def load_image_fast(idx_path):
-            idx, path = idx_path
-
+        def load_image_fast(path):
             if not os.path.exists(path):
-                logger.warning(f"[IMG] Image not found: {path}")
+                logger.warn(f"[IMG] Image not found: {path}")
                 return None
 
             try:
-                # OPTIMIZATION 1: Check file size BEFORE loading
+                # Check file size BEFORE loading
                 file_size = os.path.getsize(path)
 
                 if file_size > max_size_bytes:
-                    logger.warning(
+                    logger.warn(
                         f"[IMG] Skipping large image {os.path.basename(path)}: "
                         f"{file_size / 1024 / 1024:.1f}MB"
                     )
@@ -315,28 +307,41 @@ The functions are provided separately and you can call them as needed.
                         f"{file_size / 1024:.1f}KB"
                     )
 
-                # OPTIMIZATION 2: Open file in binary mode (fastest)
+                # Open file in binary mode
                 load_start = time.time()
                 file_handle = open(path, 'rb')
                 load_time = (time.time() - load_start) * 1000
 
-                if load_time > 50:  # Warn if loading takes > 50ms
-                    logger.warning(f"[IMG] Slow file read: {load_time:.1f}ms for {os.path.basename(path)}")
+                if load_time > 50:
+                    logger.warn(f"[IMG] Slow file read: {load_time:.1f}ms for {os.path.basename(path)}")
 
-                return idx, (
-                    os.path.basename(path),
-                    file_handle,
-                    'image/jpeg'  # Most APIs accept both JPEG and PNG
+                # Determina o MIME type
+                if path.lower().endswith('.png'):
+                    mime_type = 'image/png'
+                elif path.lower().endswith(('.jpg', '.jpeg')):
+                    mime_type = 'image/jpeg'
+                else:
+                    mime_type = 'application/octet-stream'
+
+
+                # FORMATO CORRIGIDO: Retorna o tuplo completo necessário para a lista 'files'
+                return (
+                    'image', # <--- Nome do campo da API (MUST be 'image')
+                    (
+                        os.path.basename(path), # Nome do ficheiro
+                        file_handle,            # Handle do ficheiro (conteúdo binário)
+                        mime_type               # Mime type
+                    )
                 )
 
             except Exception as e:
                 logger.error(f"[IMG] Failed to load {path}: {e}")
                 return None
 
-        # OPTIMIZATION 3: Parallel loading with thread pool
+        # Parallel loading with thread pool
         futures = {
-            self.executor.submit(load_image_fast, (i, p)): i
-            for i, p in enumerate(images)
+            self.executor.submit(load_image_fast, p): p
+            for p in images
         }
 
         # Collect results as they complete
@@ -344,12 +349,14 @@ The functions are provided separately and you can call them as needed.
         for future in as_completed(futures):
             result = future.result()
             if result:
-                idx, file_tuple = result
-                files[f'image_{idx}'] = file_tuple
+                files.append(result) # Adiciona o tuplo de ficheiro à lista
                 loaded_count += 1
 
         logger.info(f"[IMG] Loaded {loaded_count}/{len(images)} images successfully")
         return files
+
+
+    # ... (O resto da classe process_llm_response, _clean_response_text, etc., permanece inalterado)
 
     def process_llm_response(self, response_data: Dict, images: List[str] = None) -> Dict:
         """Optimized response processing."""

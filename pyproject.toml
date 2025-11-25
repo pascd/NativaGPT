@@ -35,6 +35,7 @@ dependencies = [
     "python-dotenv",
     "bytez",
     "dotenv",
+    "ffmpeg>=1.4",
 ]
 
 [build-system]

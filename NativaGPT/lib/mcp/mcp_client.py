@@ -58,9 +58,11 @@ class MCPClient:
                 if is_bash:
                     command = "bash"
                 elif is_python:
-                    command = "python"
+                    # Use the same interpreter running NativaGPT (venv-safe)
+                    command = sys.executable
                 else:  # is_js
                     command = "node"
+
 
                 # CRITICAL: Pass full environment including ROS variables
                 env = os.environ.copy()
@@ -121,7 +123,7 @@ class MCPClient:
             raise RuntimeError("No MCP servers could be connected")
 
         total_tools = sum(len(server["tools"]) for server in self.servers)
-        logger.info(f"\n✓ Total servers: {len(self.servers)}, Total tools: {total_tools}")
+        logger.info(f"\nTotal servers: {len(self.servers)}, Total tools: {total_tools}")
 
     def _get_all_tools(self) -> List[Any]:
         """Get flattened list of all tools from all servers."""
@@ -376,7 +378,7 @@ Response: {{"action": "final_answer", "answer": "4"}}
                 images_to_send = self._extract_images_from_tool_output(tool_output)
 
                 if images_to_send:
-                    logger.info(f"✓ Found {len(images_to_send)} image(s) to attach to LLM")
+                    logger.info(f"Found {len(images_to_send)} image(s) to attach to LLM")
                 else:
                     logger.info("No images found in tool output")
 
