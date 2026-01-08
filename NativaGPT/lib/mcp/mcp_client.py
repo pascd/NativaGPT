@@ -38,7 +38,6 @@ class MCPClient:
         """Connect to multiple MCP servers (python or node)."""
 
         for server_script_path in server_script_list:
-
             # Validate file exists
             if not os.path.exists(server_script_path):
                 logger.error(f"Server script not found: {server_script_path}")
@@ -63,28 +62,37 @@ class MCPClient:
                 else:  # is_js
                     command = "node"
 
-
                 # CRITICAL: Pass full environment including ROS variables
                 env = os.environ.copy()
 
                 # Ensure key ROS variables are present
-                ros_vars = ['ROS_DISTRO', 'ROS_ROOT', 'ROS_PACKAGE_PATH',
-                           'ROS_MASTER_URI', 'PYTHONPATH', 'LD_LIBRARY_PATH',
-                           'CMAKE_PREFIX_PATH', 'PKG_CONFIG_PATH', 'PATH']
+                ros_vars = [
+                    "ROS_DISTRO",
+                    "ROS_ROOT",
+                    "ROS_PACKAGE_PATH",
+                    "ROS_MASTER_URI",
+                    "PYTHONPATH",
+                    "LD_LIBRARY_PATH",
+                    "CMAKE_PREFIX_PATH",
+                    "PKG_CONFIG_PATH",
+                    "PATH",
+                ]
 
                 missing_ros = []
-                for var in ['ROS_DISTRO', 'ROS_ROOT']:
+                for var in ["ROS_DISTRO", "ROS_ROOT"]:
                     if var not in env:
                         missing_ros.append(var)
 
                 if missing_ros:
                     logger.warning(f"Missing ROS environment variables: {missing_ros}")
-                    logger.warning("Did you source ROS? Run: source /opt/ros/noetic/setup.bash")
+                    logger.warning(
+                        "Did you source ROS? Run: source /opt/ros/noetic/setup.bash"
+                    )
 
                 server_params = StdioServerParameters(
                     command=command,
                     args=[server_script_path],
-                    env=env  # Pass full environment to subprocess
+                    env=env,  # Pass full environment to subprocess
                 )
 
                 stdio_transport = await self.exit_stack.enter_async_context(
@@ -103,13 +111,15 @@ class MCPClient:
 
                 # Store server info
                 server_name = os.path.basename(server_script_path)
-                self.servers.append({
-                    "name": server_name,
-                    "session": session,
-                    "stdio": stdio,
-                    "write": write,
-                    "tools": tools
-                })
+                self.servers.append(
+                    {
+                        "name": server_name,
+                        "session": session,
+                        "stdio": stdio,
+                        "write": write,
+                        "tools": tools,
+                    }
+                )
 
                 logger.info(f"✓ Connected to '{server_name}' with {len(tools)} tools:")
                 for tool in tools:
@@ -140,45 +150,49 @@ class MCPClient:
                     return server
         return None
 
-    def _run_model(self, messages: List[Dict[str, str]], images: List[str] = None) -> str:
+    def _run_model(
+        self,
+        messages: List[Dict[str, str]],
+        images: List[str] = None,
+        system_instruction: str = None,
+    ) -> str:
         """
-        Call NativaGPT's LLM handler with given messages and return plain text.
+        Call NativaGPT's LLM handler. Supports system prompt override.
         """
         try:
-            # Convert messages to a single prompt
             prompt_parts = []
             for msg in messages:
-                role = msg['role']
-                content = msg['content']
+                role = msg["role"]
+                content = msg["content"]
 
-                if role == 'system':
+                # Se houver override, ignoramos mensagens de sistema antigas
+                if role == "system" and system_instruction:
+                    continue
+
+                if role == "system":
                     prompt_parts.append(f"{content}\n\n")
-                elif role == 'user':
+                elif role == "user":
                     prompt_parts.append(f"User: {content}\n")
-                elif role == 'assistant':
+                elif role == "assistant":
                     prompt_parts.append(f"Assistant: {content}\n")
 
             combined_prompt = "".join(prompt_parts)
 
-            # Call the LLM handler
-            response = self.llm_handler.send_to_llm(combined_prompt, images=images)
+            # Passa o system_instruction para o handler (vazio string se não fornecido)
+            final_system_instruction = system_instruction if system_instruction else ""
+
+            response = self.llm_handler.send_to_llm(
+                combined_prompt,
+                images=images,
+                system_instruction=final_system_instruction,
+            )
 
             if not response.get("success", False):
-                error_msg = response.get("error", "Unknown error")
-                return f"Model error: {error_msg}"
+                return f"Model error: {response.get('error')}"
 
-            # Extract text content
-            text_content = response.get("text_content", "")
-
-            if not text_content:
-                return "Model returned empty response"
-
-            return text_content
+            return response.get("text_content", "") or "Model returned empty response"
 
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            logger.error(f"LLM call failed:\n{error_details}")
             return f"Model error: {str(e)}"
 
     @staticmethod
@@ -188,7 +202,9 @@ class MCPClient:
             if hasattr(result, "content") and result.content:
                 parts = []
                 for item in result.content:
-                    if getattr(item, "type", None) == "text" and getattr(item, "text", None):
+                    if getattr(item, "type", None) == "text" and getattr(
+                        item, "text", None
+                    ):
                         parts.append(item.text)
                     elif hasattr(item, "text") and item.text:
                         parts.append(item.text)
@@ -210,23 +226,24 @@ class MCPClient:
             data = json.loads(tool_output)
             if isinstance(data, dict):
                 # Look for image_path key
-                if 'image_path' in data:
-                    img_path = data['image_path']
+                if "image_path" in data:
+                    img_path = data["image_path"]
                     if img_path and os.path.exists(img_path):
                         images.append(img_path)
                         logger.info(f"Found image from JSON: {img_path}")
 
                 # Look for files array
-                if 'files' in data and isinstance(data['files'], list):
-                    for f in data['files']:
+                if "files" in data and isinstance(data["files"], list):
+                    for f in data["files"]:
                         if f and os.path.exists(f) and self._is_image_file(f):
                             images.append(f)
                             logger.info(f"Found image from files: {f}")
         except json.JSONDecodeError:
             # Not JSON, try regex for file paths
             import re
+
             # Match common image paths
-            image_pattern = r'([/\w\-\.]+\.(?:jpg|jpeg|png|gif|bmp|webp))'
+            image_pattern = r"([/\w\-\.]+\.(?:jpg|jpeg|png|gif|bmp|webp))"
             matches = re.findall(image_pattern, tool_output, re.IGNORECASE)
 
             for match in matches:
@@ -239,7 +256,16 @@ class MCPClient:
     @staticmethod
     def _is_image_file(path: str) -> bool:
         """Check if file is an image based on extension."""
-        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
+        image_extensions = {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".webp",
+            ".tiff",
+            ".tif",
+        }
         _, ext = os.path.splitext(path.lower())
         return ext in image_extensions
 
@@ -249,11 +275,13 @@ class MCPClient:
         all_tools = self._get_all_tools()
 
         for tool in all_tools:
-            tools_info.append({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.inputSchema,
-            })
+            tools_info.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.inputSchema,
+                }
+            )
 
         tools_json = json.dumps(tools_info, indent=2)
 
@@ -265,7 +293,7 @@ Available tools (JSON format):
 
 For each user query, respond with ONE of these actions:
 
-1) Answer directly:
+1) Answer directly (use this for image descriptions):
    {{
      "action": "final_answer",
      "answer": "<your natural language answer>"
@@ -284,10 +312,14 @@ IMPORTANT RULES:
 - 'args' must match the tool's input_schema
 - For ROS topics: use full topic names like "/camera/color/image_raw"
 - For ROS commands: use complete commands like "rostopic list" or "rosnode info /node_name"
+- **IMAGES: If an image is already attached (from capture_camera_image), describe it DIRECTLY using final_answer. DO NOT call analyze_image or any other tool.**
 
 EXAMPLES:
 User: "Show me what the camera sees"
-Response: {{"action": "call_tool", "tool": "capture_and_analyze_image", "args": {{"topic_name": "/camera/color/image_raw"}}}}
+Response: {{"action": "call_tool", "tool": "capture_camera_image", "args": {{"topic_name": "/camera/color/image_raw"}}}}
+
+User: "What do you see in the image?" (when image is already attached)
+Response: {{"action": "final_answer", "answer": "The image shows a robotic arm with a blue gripper holding a small object on a table."}}
 
 User: "List all ROS topics"
 Response: {{"action": "call_tool", "tool": "list_topics", "args": {{}}}}
@@ -333,14 +365,14 @@ Response: {{"action": "final_answer", "answer": "4"}}
                 plan = {
                     "action": "call_tool",
                     "tool": action,
-                    "args": plan.get("args", {})
+                    "args": plan.get("args", {}),
                 }
                 action = "call_tool"
             elif "tool" in plan or "args" in plan:
                 plan = {
                     "action": "call_tool",
                     "tool": plan.get("tool", action),
-                    "args": plan.get("args", {})
+                    "args": plan.get("args", {}),
                 }
                 action = "call_tool"
             else:
@@ -377,50 +409,58 @@ Response: {{"action": "final_answer", "answer": "4"}}
                 # CRITICAL: Extract images from tool output
                 images_to_send = self._extract_images_from_tool_output(tool_output)
 
+                logger.info("Generating final answer with LLM...")
+
                 if images_to_send:
-                    logger.info(f"Found {len(images_to_send)} image(s) to attach to LLM")
+                    # ==================================================================================
+                    # MODO VISÃO PURO (Removemos o lixo técnico para focar na imagem)
+                    # ==================================================================================
+
+                    # Mensagem ultra-simples para descrição direta em português
+                    user_content = f"Vejo uma imagem. Descreve o que está visível nesta imagem, em português: {query}"
+
+                    answer_messages = [
+                        {
+                            "role": "user",
+                            "content": user_content,
+                        }
+                    ]
+
+                    logger.info(
+                        f"Attaching {len(images_to_send)} images to LLM context (Visual Mode)"
+                    )
+
+                    final_answer = self._run_model(
+                        answer_messages,
+                        images=images_to_send,
+                        system_instruction=None,  # Deixa o handler usar o prompt normal
+                    )
+
                 else:
-                    logger.info("No images found in tool output")
+                    # ==================================================================================
+                    # MODO TEXTO NORMAL (Explica o resultado da ferramenta)
+                    # ==================================================================================
+                    answer_system_prompt = """
+    You are a helpful assistant. The user asked a question and a tool provided the text result below.
+    Summarize the result clearly in Portuguese.
+    """
+                    answer_messages = [
+                        {"role": "system", "content": answer_system_prompt.strip()},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"User Question: {query}\n"
+                                f"Tool Result: {tool_output}\n\n"
+                                "Explain this result to the user."
+                            ),
+                        },
+                    ]
+                    final_answer = self._run_model(answer_messages)
+
+                return final_answer
 
             except Exception as e:
-                import traceback
-                logger.error(f"Tool execution failed:\n{traceback.format_exc()}")
-                return f"Error calling tool '{tool_name}': {e}"
-
-            # 3) Ask LLM to summarize tool output WITH IMAGES
-            answer_system_prompt = """
-You are a helpful assistant analyzing tool outputs. The user asked a question and an external tool provided data.
-
-Your job:
-1. If images are attached, describe what you see in them
-2. Explain the tool's findings in clear, natural language
-3. Answer the user's original question based on the data
-
-Be specific and informative.
-"""
-            answer_messages = [
-                {"role": "system", "content": answer_system_prompt.strip()},
-                {
-                    "role": "user",
-                    "content": (
-                        f"User question: {query}\n\n"
-                        f"Tool used: {tool_name}\n"
-                        f"Tool arguments: {json.dumps(args)}\n\n"
-                        f"Tool output:\n{tool_output}\n\n"
-                        "Please analyze and explain this for the user."
-                    ),
-                },
-            ]
-
-            # CRITICAL: Send WITH images if available
-            logger.info("Generating final answer with LLM...")
-            if images_to_send:
-                logger.info(f"Attaching {len(images_to_send)} images to LLM context")
-                final_answer = self._run_model(answer_messages, images=images_to_send)
-            else:
-                final_answer = self._run_model(answer_messages)
-
-            return final_answer
+                return f"Error calling tool '{tool_name}': {str(e)}"
 
         # Unknown action
         return f"Unexpected plan from model: {plan_raw}"
@@ -462,11 +502,13 @@ async def main():
 
     # Create LLM handler
     from NativaGPT.lib.config_manager import ConfigManager
+
     config_path = "config/config_default.json"
     config_manager = ConfigManager(config_path)
     config = config_manager.get()
 
     from NativaGPT.lib.handlers.llm_prompt_handler import LLMPromptHandler
+
     llm_handler = LLMPromptHandler(config)
 
     client = MCPClient(llm_handler)
@@ -477,13 +519,13 @@ async def main():
         queries = [
             "List all available ROS topics",
             "Show me what the robot's camera sees",
-            "What's the weather in Florida?"
+            "What's the weather in Florida?",
         ]
 
         for query in queries:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Query: {query}")
-            print('='*60)
+            print("=" * 60)
             response = await client.process_query(query)
             print(f"Response: {response}")
 
