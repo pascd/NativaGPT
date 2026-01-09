@@ -37,6 +37,15 @@
       },
       "ros1_mcp": {
         "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros.py"
+      },
+      "native_mcp": {
+        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_native.py"
+      },
+      "turtlesim_mcp": {
+        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_turtlesim.py"
+      },
+      "ros_functions_mcp": {
+        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_ros.py"
       }
     }
   },

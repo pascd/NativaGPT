@@ -286,20 +286,20 @@ class MCPClient:
         tools_json = json.dumps(tools_info, indent=2)
 
         system_prompt = f"""
-You are a tool-using assistant with access to powerful tools including ROS commands, image capture, and more.
+You are a tool-using assistant with access to powerful tools.
 
 Available tools (JSON format):
 {tools_json}
 
 For each user query, respond with ONE of these actions:
 
-1) Answer directly (use this for image descriptions):
+1) Answer directly (for explanations, conversations, and image descriptions):
    {{
      "action": "final_answer",
      "answer": "<your natural language answer>"
    }}
 
-2) Call a tool:
+2) Call a tool (for executing commands and getting data):
    {{
      "action": "call_tool",
      "tool": "<exact tool name from list>",
@@ -310,22 +310,18 @@ IMPORTANT RULES:
 - Output ONLY valid JSON (no text before/after, no trailing commas)
 - 'tool' must exactly match a name from the list above
 - 'args' must match the tool's input_schema
+- Commands with {{placeholder}} need those arguments filled in
 - For ROS topics: use full topic names like "/camera/color/image_raw"
-- For ROS commands: use complete commands like "rostopic list" or "rosnode info /node_name"
-- **IMAGES: If an image is already attached (from capture_camera_image), describe it DIRECTLY using final_answer. DO NOT call analyze_image or any other tool.**
 
 EXAMPLES:
-User: "Show me what the camera sees"
-Response: {{"action": "call_tool", "tool": "capture_camera_image", "args": {{"topic_name": "/camera/color/image_raw"}}}}
-
-User: "What do you see in the image?" (when image is already attached)
-Response: {{"action": "final_answer", "answer": "The image shows a robotic arm with a blue gripper holding a small object on a table."}}
-
-User: "List all ROS topics"
-Response: {{"action": "call_tool", "tool": "list_topics", "args": {{}}}}
-
-User: "What's 2+2?"
+User: "What is 2+2?"
 Response: {{"action": "final_answer", "answer": "4"}}
+
+User: "Check disk space"
+Response: {{"action": "call_tool", "tool": "check_disk", "args": {{}}}}
+
+User: "What do you see in the image?"
+Response: {{"action": "final_answer", "answer": "The image shows a robotic arm with a blue gripper."}}
 """
         return system_prompt.strip()
 
