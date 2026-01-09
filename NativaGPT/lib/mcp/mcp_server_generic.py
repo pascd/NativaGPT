@@ -50,38 +50,57 @@ def create_tool_function(
     """Create an async tool function."""
     has_placeholders = bool(arg_names)
 
-    async def tool_impl(args: str = "") -> str:
+    async def tool_impl(args: Any = None) -> str:
         """Execute the command and return output."""
         try:
             cmd = command
 
+            # Handle args - can be dict (from MCP) or string or None
+            if args is None:
+                parsed = []
+            elif isinstance(args, dict):
+                # MCP passes args as {"arg_name": value, ...} or {"args": "values..."}
+                if "args" in args:
+                    # Some MCP clients pass {"args": "value1 value2..."}
+                    args_str = args["args"]
+                    parsed = args_str.split() if args_str else []
+                else:
+                    # Pass as {"velx": "0.5", ...}
+                    parsed = [str(args.get(arg, "")) for arg in arg_names]
+            else:
+                # Direct string argument
+                parsed = str(args).split() if args else []
+
             # If command has placeholders, parse args to fill them
             if has_placeholders:
-                parsed = args.split() if args else []
                 for i, arg in enumerate(arg_names):
                     if i < len(parsed):
                         cmd = cmd.replace(f"{{{arg}}}", parsed[i])
             else:
                 # No placeholders - just execute the command as-is
-                if args:
-                    cmd = f"{cmd} {args}"
+                if parsed:
+                    cmd = f"{cmd} {' '.join(parsed)}"
 
             # Add location if specified
             if location:
                 cmd = f"cd {location} && {cmd}"
 
-            timeout = 30
+            timeout = 10  # Reduced timeout for faster feedback
 
             if execution == "shell":
                 result = subprocess.run(
                     cmd, shell=True, capture_output=True, text=True, timeout=timeout
                 )
-                output = (
-                    result.stdout.strip()
-                    if result.stdout.strip()
-                    else result.stderr.strip()
-                )
-                return output if output else "Command executed (no output)"
+                output = result.stdout.strip()
+                if not output:
+                    output = result.stderr.strip()
+                if not output:
+                    # For commands that might have succeeded silently, check return code
+                    if result.returncode == 0:
+                        output = f"Command executed successfully (exit code: {result.returncode})"
+                    else:
+                        output = f"Command failed with exit code: {result.returncode}"
+                return output
 
             elif execution in ["ros", "ros2"]:
                 ros_distro = "noetic" if execution == "ros" else "humble"
@@ -99,12 +118,16 @@ def create_tool_function(
                     text=True,
                     timeout=timeout,
                 )
-                output = (
-                    result.stdout.strip()
-                    if result.stdout.strip()
-                    else result.stderr.strip()
-                )
-                return output if output else "Command executed (no output)"
+                output = result.stdout.strip()
+                if not output:
+                    output = result.stderr.strip()
+                if not output:
+                    # For commands that might have succeeded silently, check return code
+                    if result.returncode == 0:
+                        output = f"Command executed successfully (exit code: {result.returncode})"
+                    else:
+                        output = f"Command failed with exit code: {result.returncode}"
+                return output
 
             else:
                 return f"Unsupported execution type: {execution}"

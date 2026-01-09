@@ -123,7 +123,8 @@ class MCPClient:
 
                 logger.info(f"✓ Connected to '{server_name}' with {len(tools)} tools:")
                 for tool in tools:
-                    logger.info(f"  - {tool.name}: {tool.description[:60]}...")
+                    desc = tool.description or ""
+                    logger.info(f"  - {tool.name}: {desc[:60]}...")
 
             except Exception as e:
                 logger.error(f"Failed to connect to {server_script_path}: {e}")
@@ -153,8 +154,8 @@ class MCPClient:
     def _run_model(
         self,
         messages: List[Dict[str, str]],
-        images: List[str] = None,
-        system_instruction: str = None,
+        images: Optional[List[str]] = None,
+        system_instruction: Optional[str] = None,
     ) -> str:
         """
         Call NativaGPT's LLM handler. Supports system prompt override.
@@ -180,10 +181,14 @@ class MCPClient:
 
             # Passa o system_instruction para o handler (vazio string se não fornecido)
             final_system_instruction = system_instruction if system_instruction else ""
+            final_images = images if images is not None else []
+
+            if not self.llm_handler:
+                return "Error: LLM handler not initialized"
 
             response = self.llm_handler.send_to_llm(
                 combined_prompt,
-                images=images,
+                images=final_images,
                 system_instruction=final_system_instruction,
             )
 
@@ -325,141 +330,463 @@ Response: {{"action": "final_answer", "answer": "The image shows a robotic arm w
 """
         return system_prompt.strip()
 
-    async def process_query(self, query: str) -> str:
+    async def process_query(
+        self, query: str, max_correction_iterations: int = 3
+    ) -> str:
         """
-        Process user query with automatic tool selection and image attachment.
+        Process user query with automatic tool selection, image attachment, and self-healing.
+
+        Features:
+        - Automatic tool selection
+        - Image extraction from tool outputs
+        - Self-healing: When a tool fails, the LLM analyzes the error and suggests fixes
+        - Retry loop: Continues until the user's request is fulfilled or max iterations reached
         """
+        logger.info(f"MCP process_query ENTRY - query: {query[:100]}...")
+
         if not self.servers:
+            logger.error("No MCP servers connected")
             return "Error: No MCP servers connected."
 
-        # 1) PLAN: ask LLM if it wants to call a tool
-        system_prompt = self._build_tool_spec_prompt()
-        plan_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query},
+        if not self.llm_handler:
+            logger.error("LLM handler not initialized")
+            return "Error: LLM handler not initialized"
+
+        logger.info(f"MCP servers available: {[s['name'] for s in self.servers]}")
+
+        original_query = query
+        last_error = ""
+        iteration = 0
+
+        while iteration < max_correction_iterations:
+            iteration += 1
+            logger.info(
+                f"MCP Query Iteration {iteration}/{max_correction_iterations}: {query[:100]}..."
+            )
+
+            # 1) PLAN: ask LLM if it wants to call a tool
+            system_prompt = self._build_tool_spec_prompt()
+            plan_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ]
+
+            logger.info("Planning action...")
+            plan_raw = self._run_model(plan_messages)
+
+            logger.info(f"LLM response length: {len(plan_raw)} chars")
+            logger.info(f"LLM response preview: {plan_raw[:200]}...")
+
+            # ALWAYS check for executable JSON in the response first
+            forced_plan = self._force_execute_json_plan(plan_raw)
+            if forced_plan:
+                logger.info(
+                    "🎯 EXECUTING JSON plan found in LLM response - bypassing normal extraction"
+                )
+                plan = forced_plan
+            else:
+                # Try to parse JSON plan normally
+                plan = self._extract_json_plan(plan_raw)
+
+                logger.info(f"Normal extraction result: {plan}")
+
+                if plan is None:
+                    logger.warning("Could not extract valid JSON plan from response")
+                    if iteration == 1:
+                        # No valid plan found - return as direct answer
+                        logger.info("No tool plan found, returning as direct answer")
+                        return plan_raw
+                    else:
+                        # On retry, ask for proper JSON
+                        query = self._build_correction_query(
+                            original_query,
+                            'Response was not valid JSON format - must include {"action": "call_tool" or "final_answer", ...}',
+                            plan_raw,
+                            {
+                                "fulfilled": False,
+                                "reason": "Response was not valid JSON format",
+                            },
+                        )
+                        continue
+
+            logger.info(
+                f"Successfully extracted plan: action={plan.get('action')}, tool={plan.get('tool', 'N/A')}"
+            )
+
+            action = plan.get("action")
+
+            # Get list of all valid tool names
+            all_tool_names = [tool.name for tool in self._get_all_tools()]
+
+            # Handle common mistake where model uses tool name as action
+            if action not in ["final_answer", "call_tool"]:
+                if action in all_tool_names:
+                    logger.info(
+                        f"Fixed plan: model used tool name '{action}' as action"
+                    )
+                    plan = {
+                        "action": "call_tool",
+                        "tool": action,
+                        "args": plan.get("args", {}),
+                    }
+                    action = "call_tool"
+                elif "tool" in plan or "args" in plan:
+                    plan = {
+                        "action": "call_tool",
+                        "tool": plan.get("tool", action),
+                        "args": plan.get("args", {}),
+                    }
+                    action = "call_tool"
+                else:
+                    # Not a valid plan - return as answer
+                    if iteration == 1:
+                        return plan_raw
+                    query = self._build_correction_query(
+                        original_query,
+                        "Invalid plan format",
+                        plan_raw,
+                        {"fulfilled": False, "reason": "Invalid plan format"},
+                    )
+                    continue
+
+            # 2A) Direct answer
+            if action == "final_answer":
+                answer = plan.get("answer", "")
+                # If this is not the first iteration, verify the answer addresses the original query
+                if iteration > 1:
+                    verification = self._verify_answer_fulfills_request(
+                        original_query, answer
+                    )
+                    if verification["fulfilled"]:
+                        return answer
+                    else:
+                        logger.info(
+                            f"Answer doesn't fully fulfill request: {verification['reason']}"
+                        )
+                        query = self._build_correction_query(
+                            original_query, last_error, answer, verification
+                        )
+                        continue
+                return answer or "(no answer provided)"
+
+            # 2B) Tool call
+            if action == "call_tool":
+                tool_name = plan.get("tool")
+                args = plan.get("args", {})
+
+                if not tool_name:
+                    return f"Tool plan missing 'tool' field: {plan_raw}"
+
+                # Find which server has this tool
+                server = self._find_tool_server(tool_name)
+                if not server:
+                    error_msg = f"Tool '{tool_name}' not found in any connected server"
+                    last_error = error_msg
+                    # Try to get an alternative tool
+                    if iteration < max_correction_iterations:
+                        query = self._build_correction_query(
+                            original_query,
+                            error_msg,
+                            "",
+                            {"fulfilled": False, "reason": "Tool not found"},
+                        )
+                        logger.info(f"Tool not found, attempting correction...")
+                        continue
+                    return error_msg
+
+                # Call MCP tool
+                try:
+                    logger.info(f"Calling tool: {tool_name}")
+                    logger.info(f"Arguments: {json.dumps(args, indent=2)}")
+
+                    result = await server["session"].call_tool(tool_name, args)
+                    tool_output = self._extract_tool_text(result)
+
+                    logger.info(f"Tool output: {tool_output[:200]}...")
+                    logger.info(f"Tool output length: {len(tool_output)} chars")
+
+                    # Check if tool execution had an error
+                    is_error, error_reason = self._check_tool_error(
+                        tool_output, tool_name
+                    )
+
+                    # CRITICAL: Extract images from tool output
+                    images_to_send = self._extract_images_from_tool_output(tool_output)
+
+                    logger.info("Generating final answer with LLM...")
+
+                    if images_to_send:
+                        user_content = f"Vejo uma imagem. Descreve o que está visível nesta imagem, em português: {query}"
+
+                        answer_messages = [
+                            {
+                                "role": "user",
+                                "content": user_content,
+                            }
+                        ]
+
+                        logger.info(
+                            f"Attaching {len(images_to_send)} images to LLM context (Visual Mode)"
+                        )
+
+                        final_answer = self._run_model(
+                            answer_messages,
+                            images=images_to_send,
+                            system_instruction="",
+                        )
+
+                        # Verify the visual answer fulfills the request
+                        if iteration > 1 or is_error:
+                            verification = self._verify_answer_fulfills_request(
+                                original_query, final_answer
+                            )
+                            if not verification["fulfilled"]:
+                                logger.info(
+                                    f"Visual answer doesn't fulfill request: {verification['reason']}"
+                                )
+                                last_error = (
+                                    tool_output
+                                    if is_error
+                                    else "Incomplete visual analysis"
+                                )
+                                if iteration < max_correction_iterations:
+                                    query = self._build_correction_query(
+                                        original_query,
+                                        last_error,
+                                        final_answer,
+                                        verification,
+                                    )
+                                    continue
+
+                    else:
+                        # TEXT MODE - Explain the result or error
+                        answer_system_prompt = """
+You are a helpful assistant. The user asked a question and a tool provided the text result below.
+Summarize the result clearly in Portuguese.
+
+IMPORTANT: If the tool result shows an error, timeout, or unexpected output, explain what went wrong
+and suggest what might need to be fixed.
+                        """
+                        answer_messages = [
+                            {"role": "system", "content": answer_system_prompt.strip()},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"User Question: {query}\n"
+                                    f"Tool Result: {tool_output}\n\n"
+                                    "Explain this result to the user. If there's an error, explain what went wrong."
+                                ),
+                            },
+                        ]
+                        final_answer = self._run_model(answer_messages)
+
+                        # Check if tool result was successful and fulfills request
+                        if iteration == 1 and not is_error:
+                            # First attempt with successful result - verify it answers the user
+                            verification = self._verify_answer_fulfills_request(
+                                original_query, final_answer
+                            )
+                            if verification["fulfilled"]:
+                                return final_answer
+                            else:
+                                logger.info(
+                                    f"Tool result doesn't fulfill request: {verification['reason']}"
+                                )
+                                last_error = tool_output
+                                if iteration < max_correction_iterations:
+                                    query = self._build_correction_query(
+                                        original_query,
+                                        last_error,
+                                        final_answer,
+                                        verification,
+                                    )
+                                    continue
+                        elif is_error:
+                            # Tool returned an error - need correction
+                            logger.info(f"Tool error detected: {tool_output[:200]}...")
+                            last_error = tool_output
+                            if iteration < max_correction_iterations:
+                                verification = {
+                                    "fulfilled": False,
+                                    "reason": f"Tool error: {tool_output[:100]}...",
+                                }
+                                query = self._build_correction_query(
+                                    original_query,
+                                    last_error,
+                                    final_answer,
+                                    verification,
+                                )
+                                continue
+
+                    return final_answer
+
+                except Exception as e:
+                    error_msg = f"Error calling tool '{tool_name}': {str(e)}"
+                    logger.error(error_msg)
+                    last_error = str(e)
+
+                    if iteration < max_correction_iterations:
+                        # Try to get a corrected plan
+                        query = self._build_correction_query(
+                            original_query,
+                            last_error,
+                            "",
+                            {"fulfilled": False, "reason": f"Exception: {str(e)}"},
+                        )
+                        logger.info(f"Tool exception, attempting correction...")
+                        continue
+                    return error_msg
+
+            # Unknown action
+            return f"Unexpected plan from model: {plan_raw}"
+
+        # Max iterations reached
+        return (
+            f"Could not fulfill request after {max_correction_iterations} attempts.\n"
+            f"Last error: {last_error}\n"
+            f"Original query: {original_query}\n\n"
+            "Please check the tool configuration or try a different approach."
+        )
+
+    def _check_tool_error(self, tool_output: str, tool_name: str) -> tuple[bool, str]:
+        """Check if tool output indicates an error condition. Returns (is_error, reason)."""
+        output_lower = tool_output.lower().strip()
+
+        # Check for explicit error indicators
+        error_patterns = [
+            ("error", "Output contains 'error'"),
+            ("failed", "Output contains 'failed'"),
+            ("exception", "Output contains 'exception'"),
+            ("cannot", "Output contains 'cannot'"),
+            ("unable", "Output contains 'unable'"),
+            ("not found", "Output contains 'not found'"),
+            ("no such", "Output contains 'no such'"),
+            ("invalid", "Output contains 'invalid'"),
+            ("permission denied", "Output contains 'permission denied'"),
+            ("connection refused", "Output contains 'connection refused'"),
+            ("service unavailable", "Output contains 'service unavailable'"),
+            ("timed out", "Output contains 'timed out'"),
+            ("timeout", "Output contains 'timeout'"),
         ]
 
-        logger.info("Planning action...")
-        plan_raw = self._run_model(plan_messages)
+        for pattern, reason in error_patterns:
+            if pattern in output_lower:
+                return True, reason
 
-        # Try to parse JSON plan
+        # Check for empty or very short responses that might indicate failure
+        if len(output_lower) < 3:
+            return True, f"Output is empty or too short ({len(output_lower)} chars)"
+
+        # Check for specific success indicators
+        success_patterns = [
+            "command executed",
+            "success",
+            "done",
+            "published",
+            "ok",
+            "true",
+        ]
+        for pattern in success_patterns:
+            if pattern in output_lower:
+                return False, "Success indicator found"
+
+        # If output looks like command output but no errors, it's likely successful
+        # ROS commands often return minimal output on success
+        return False, ""
+
+    def _verify_answer_fulfills_request(self, original_query: str, answer: str) -> dict:
+        """Verify if the answer actually fulfills the user's request."""
         try:
-            plan = self._parse_plan_json(plan_raw)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse plan as JSON: {e}")
-            return plan_raw
-
-        action = plan.get("action")
-
-        # Get list of all valid tool names
-        all_tool_names = [tool.name for tool in self._get_all_tools()]
-
-        # Handle common mistake where model uses tool name as action
-        if action not in ["final_answer", "call_tool"]:
-            if action in all_tool_names:
-                logger.info(f"Fixed plan: model used tool name '{action}' as action")
-                plan = {
-                    "action": "call_tool",
-                    "tool": action,
-                    "args": plan.get("args", {}),
+            if not self.llm_handler:
+                return {
+                    "fulfilled": True,
+                    "reason": "No LLM handler, assuming success",
+                    "confidence": 0.5,
                 }
-                action = "call_tool"
-            elif "tool" in plan or "args" in plan:
-                plan = {
-                    "action": "call_tool",
-                    "tool": plan.get("tool", action),
-                    "args": plan.get("args", {}),
-                }
-                action = "call_tool"
-            else:
-                return f"Unexpected plan from model: {json.dumps(plan, indent=2)}"
 
-        # 2A) Direct answer
-        if action == "final_answer":
-            answer = plan.get("answer", "")
-            return answer or "(no answer provided)"
+            verification_prompt = f"""
+You are a verification assistant. Determine if the answer fulfills the user's request.
 
-        # 2B) Tool call
-        if action == "call_tool":
-            tool_name = plan.get("tool")
-            args = plan.get("args", {})
+Original User Request: {original_query}
 
-            if not tool_name:
-                return f"Tool plan missing 'tool' field: {plan_raw}"
+Actual Answer: {answer}
 
-            # Find which server has this tool
-            server = self._find_tool_server(tool_name)
-            if not server:
-                return f"Tool '{tool_name}' not found in any connected server"
+Respond with ONLY a JSON object (no other text):
+{{
+    "fulfilled": true/false,
+    "reason": "brief explanation of why it does or doesn't fulfill the request",
+    "confidence": 0.0-1.0
+}}
+            """
 
-            # Call MCP tool
-            try:
-                logger.info(f"Calling tool: {tool_name}")
-                logger.info(f"Arguments: {json.dumps(args, indent=2)}")
+            response = self.llm_handler.send_to_llm(
+                verification_prompt,
+                system_instruction="You are a verification assistant. Output ONLY valid JSON.",
+            )
 
-                result = await server["session"].call_tool(tool_name, args)
-                tool_output = self._extract_tool_text(result)
+            if response.get("success"):
+                text = response.get("text_content", "")
+                # Extract JSON from response
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1:
+                    json_str = text[start : end + 1]
+                    result = json.loads(json_str)
+                    return {
+                        "fulfilled": result.get("fulfilled", False),
+                        "reason": result.get("reason", "Unknown"),
+                        "confidence": result.get("confidence", 0.5),
+                    }
 
-                logger.info(f"Tool output length: {len(tool_output)} chars")
+            return {
+                "fulfilled": True,
+                "reason": "Could not verify, assuming success",
+                "confidence": 0.5,
+            }
 
-                # CRITICAL: Extract images from tool output
-                images_to_send = self._extract_images_from_tool_output(tool_output)
+        except Exception as e:
+            logger.warning(f"Verification failed: {e}")
+            return {
+                "fulfilled": True,
+                "reason": "Verification error, assuming success",
+                "confidence": 0.5,
+            }
 
-                logger.info("Generating final answer with LLM...")
+    def _build_correction_query(
+        self, original_query: str, last_error: str, last_answer: str, verification: dict
+    ) -> str:
+        """Build a query to ask the LLM to correct the previous attempt."""
+        last_answer_preview = (
+            last_answer[:500] if last_answer else "No answer generated"
+        )
 
-                if images_to_send:
-                    # ==================================================================================
-                    # MODO VISÃO PURO (Removemos o lixo técnico para focar na imagem)
-                    # ==================================================================================
+        correction_prompt = f"""
+The previous attempt to answer this request failed or was incomplete:
 
-                    # Mensagem ultra-simples para descrição direta em português
-                    user_content = f"Vejo uma imagem. Descreve o que está visível nesta imagem, em português: {query}"
+ORIGINAL USER REQUEST: {original_query}
 
-                    answer_messages = [
-                        {
-                            "role": "user",
-                            "content": user_content,
-                        }
-                    ]
+PREVIOUS ERROR/ISSUE: {last_error}
 
-                    logger.info(
-                        f"Attaching {len(images_to_send)} images to LLM context (Visual Mode)"
-                    )
+VERIFICATION RESULT: {verification["reason"]}
 
-                    final_answer = self._run_model(
-                        answer_messages,
-                        images=images_to_send,
-                        system_instruction=None,  # Deixa o handler usar o prompt normal
-                    )
+PREVIOUS ANSWER (if any): {last_answer_preview}
 
-                else:
-                    # ==================================================================================
-                    # MODO TEXTO NORMAL (Explica o resultado da ferramenta)
-                    # ==================================================================================
-                    answer_system_prompt = """
-    You are a helpful assistant. The user asked a question and a tool provided the text result below.
-    Summarize the result clearly in Portuguese.
-    """
-                    answer_messages = [
-                        {"role": "system", "content": answer_system_prompt.strip()},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"User Question: {query}\n"
-                                f"Tool Result: {tool_output}\n\n"
-                                "Explain this result to the user."
-                            ),
-                        },
-                    ]
-                    final_answer = self._run_model(answer_messages)
+Please analyze what went wrong and provide a corrected plan. 
+Output ONLY a JSON object:
+{{
+    "action": "call_tool" or "final_answer",
+    "tool": "correct_tool_name" (only if action is call_tool),
+    "args": {{ corrected_arguments }},
+    "answer": "direct answer" (only if action is final_answer),
+    "analysis": "brief explanation of what was wrong and how you're fixing it"
+}}
 
-                return final_answer
-
-            except Exception as e:
-                return f"Error calling tool '{tool_name}': {str(e)}"
-
-        # Unknown action
-        return f"Unexpected plan from model: {plan_raw}"
+Think about:
+1. What specifically failed or was incomplete?
+2. What tool should be called instead or with different parameters?
+3. How can we ensure the request is fulfilled this time?
+        """
+        return correction_prompt
 
     @staticmethod
     def _parse_plan_json(plan_raw: str):
@@ -481,6 +808,170 @@ Response: {{"action": "final_answer", "answer": "The image shows a robotic arm w
             json_str = plan_raw
 
         return json.loads(json_str)
+
+    def _extract_json_plan(self, plan_raw: str):
+        """
+        Extract a valid JSON plan from LLM response.
+        Returns the parsed plan dict or None if no valid plan found.
+        Handles curly quotes and embedded JSON in text.
+        """
+        try:
+            # First try direct parsing
+            return self._parse_plan_json(plan_raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        try:
+            plan_raw = plan_raw.strip()
+
+            # Normalize curly quotes to straight quotes (common Unicode quotes)
+            replacements = [
+                ('"', '"'),
+                ('"', '"'),  # curly double quotes
+                ("'", "'"),
+                ("'", "'"),  # curly single quotes
+                ('"', '"'),
+                ('"', '"'),  # another variant
+            ]
+            for old, new in replacements:
+                plan_raw = plan_raw.replace(old, new)
+
+            # Remove markdown code blocks
+            if plan_raw.startswith("```"):
+                lines = plan_raw.splitlines()
+                lines = [ln for ln in lines if not ln.strip().startswith("```")]
+                plan_raw = "\n".join(lines).strip()
+
+            # Find JSON object - look for "action" key regardless of quote style
+            # First, try to find {"action
+            start = plan_raw.find('{"action')
+            if start == -1:
+                # Try finding just {action without quotes (unlikely but possible)
+                start = plan_raw.find("{action")
+
+            if start == -1:
+                # Last resort: find first { and try to parse from there
+                brace_start = plan_raw.find("{")
+                if brace_start != -1:
+                    # Look for "action" or 'action' nearby
+                    after_brace = plan_raw[brace_start : brace_start + 100]
+                    if '"action' in after_brace or "'action" in after_brace:
+                        start = brace_start
+
+            if start != -1:
+                # Find the matching closing brace
+                depth = 0
+                end = start
+                for i in range(start, len(plan_raw)):
+                    if plan_raw[i] == "{":
+                        depth += 1
+                    elif plan_raw[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+
+                if depth == 0:
+                    json_str = plan_raw[start:end]
+                    # Try to parse it
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Try replacing curly quotes and retry
+                        for old, new in [('"', '"'), ('"', '"')]:
+                            json_str_fixed = json_str.replace(old, new)
+                            try:
+                                return json.loads(json_str_fixed)
+                            except json.JSONDecodeError:
+                                continue
+
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract JSON plan: {e}")
+            return None
+
+    def _force_execute_json_plan(self, response_text: str):
+        """
+        Force execution of any JSON plan found in the response text.
+        This is a last resort to execute plans that the LLM returns but aren't properly extracted.
+        """
+        try:
+            # Look for JSON blocks and execute them directly
+            import re
+
+            # Find all JSON-like blocks (handle nested braces)
+            # Look for { followed by balanced braces
+            json_blocks = []
+            i = 0
+            while i < len(response_text):
+                if response_text[i] == "{":
+                    # Start of potential JSON block
+                    depth = 0
+                    start = i
+                    for j in range(i, len(response_text)):
+                        if response_text[j] == "{":
+                            depth += 1
+                        elif response_text[j] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                # Found matching closing brace
+                                json_blocks.append(response_text[start : j + 1])
+                                i = j + 1
+                                break
+                    else:
+                        # No matching closing brace found
+                        i += 1
+                else:
+                    i += 1
+
+            logger.info(f"Found {len(json_blocks)} potential JSON blocks in response")
+
+            for block in json_blocks:
+                logger.info(f"Testing JSON block: {block[:100]}...")
+
+                try:
+                    # Try to parse as JSON
+                    plan = json.loads(block)
+
+                    # Check if it's a valid plan
+                    action = plan.get("action")
+                    if action in ["call_tool", "final_answer"]:
+                        logger.info(f"Found executable JSON plan: {block[:100]}...")
+                        return plan
+
+                except json.JSONDecodeError:
+                    # Try fixing common JSON issues
+                    block_fixed = block
+
+                    # Remove trailing commas before }
+                    block_fixed = re.sub(r",\s*\}", "}", block_fixed)
+                    block_fixed = re.sub(r",\s*\]", "]", block_fixed)
+
+                    # Normalize quotes - handle all variations
+                    block_fixed = block_fixed.replace('"', '"').replace('"', '"')
+                    block_fixed = block_fixed.replace(""", "'").replace(""", "'")
+                    block_fixed = block_fixed.replace('"', '"').replace('"', '"')
+
+                    logger.info(f"Trying fixed block: {block_fixed[:100]}...")
+
+                    try:
+                        plan = json.loads(block_fixed)
+                        action = plan.get("action")
+                        if action in ["call_tool", "final_answer"]:
+                            logger.info(
+                                f"Found executable JSON plan after fixing: {block_fixed[:100]}..."
+                            )
+                            return plan
+                    except json.JSONDecodeError as e2:
+                        logger.info(f"Block still invalid: {e2}")
+                        continue
+
+            logger.info("No executable JSON plans found")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to force execute JSON plan: {e}")
+            return None
 
     async def cleanup(self):
         """Cleanup resources."""
