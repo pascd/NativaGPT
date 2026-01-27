@@ -12,7 +12,7 @@
       "error_msg": "Attention: there is an error.",
       "greeting_msg": "Hey, I am Nativa. What are we doing today?"
     },
-    "database_folder": "/home/pedro/Documents/git-repos/NativaGPT/config/functions",
+    "database_folder": "/home/pedro/Documents/uv-projects/NativaGPT/config/functions",
     "embedding_model": "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf",
     "audio_key": "f1",
     "text_key": "f2",
@@ -33,19 +33,10 @@
     "enabled": true,
     "mcp_servers": {
       "weather_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
+        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
       },
       "ros1_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros.py"
-      },
-      "native_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_native.py"
-      },
-      "turtlesim_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_turtlesim.py"
-      },
-      "ros_functions_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/servers/launch_ros.py"
+        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros1.py"
       }
     }
   },

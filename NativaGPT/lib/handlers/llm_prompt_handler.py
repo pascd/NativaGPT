@@ -70,7 +70,6 @@ class LLMPromptHandler:
         llm_config = config.get("llm_config", {})
 
         self.endpoint = llm_config.get("endpoint", "")
-        self.model = llm_config.get("model", "deepseek-r1:latest")
         self.vision_model = llm_config.get("vision_model", "llava:latest")
         self.temperature = llm_config.get("temperature", 0.1)
         self.max_tokens = llm_config.get("max_tokens", 2000)
@@ -98,7 +97,7 @@ class LLMPromptHandler:
         self.config_manager = ConfigManager(config)
         self._enhanced_prompt_cache = {}
 
-        logger.info(f"LLM Handler initialized. Endpoint: {self.endpoint}")
+        logger.info(f"LLM Handler was initialized. Endpoint: {self.endpoint}")
 
     def _handle_ndjson_responses(self, response) -> Dict:
         """Parses NDJSON stream."""
