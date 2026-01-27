@@ -6,9 +6,10 @@ def main():
 
   while True:
 
-    response = wrapper.ask(input("Prompt:"))
+    result = wrapper.ask(input("Prompt:"))
 
-    print(response)
+    print(result["tools_called"])
+    print(result["response"])
 
 if __name__ == "__main__":
 

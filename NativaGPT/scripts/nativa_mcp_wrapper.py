@@ -188,14 +188,18 @@ class NativaMCPWrapper:
         )
 
         response = self.llm_handler.send_to_llm(prompt)
-        text_response = await self._handle_logic(
-            response.get("text_content", "{}"), query
+        processed_response = await self._handle_logic(
+            response.get("text_content", "{}"), query, all_tools or []
         )
 
-        return {"tools": all_tools, "response": text_response}
+        return processed_response
 
-    async def _handle_logic(self, content: str, original_query: str) -> str:
+    async def _handle_logic(
+        self, content: str, original_query: str, all_tools: List[Dict] = []
+    ) -> Dict[str, Any]:
         cleaned = self._clean_json(content)
+        tools_called = []
+
         try:
             data = json.loads(cleaned)
             is_tool = isinstance(data, dict) and ("tool" in data)
@@ -203,6 +207,7 @@ class NativaMCPWrapper:
             if is_tool:
                 tool_name = data["tool"]
                 args = data.get("args", {})
+                tools_called.append({"name": tool_name, "args": args})
 
                 # Execution
                 if tool_name in self.custom_local_tools:
@@ -212,17 +217,33 @@ class NativaMCPWrapper:
 
                 # Summarize result
                 summary_prompt = (
-                    f"User: {original_query}\n"
-                    f"Action: Ran tool {tool_name}\n"
-                    f"Result: {result}\n"
-                    "Task: Briefly explain the outcome to the user."
+                    f"User asked: {original_query}\n"
+                    f"Tool called: {tool_name} with args {args}\n"
+                    f"Tool result: {result}\n"
+                    "Task: Provide a clear, concise answer to the user about what happened."
                 )
                 final = self.llm_handler.send_to_llm(summary_prompt)
-                return final.get("text_content", str(result)).strip()
+                clean_answer = final.get("text_content", str(result)).strip()
 
-            return data.get("answer", content).strip()
-        except:
-            return cleaned.strip()
+                return {
+                    "tools_called": tools_called,
+                    "response": clean_answer,
+                    "raw_result": result,
+                }
+
+            # Direct answer - no tools called
+            direct_answer = data.get("answer", content).strip()
+            return {
+                "tools_called": tools_called,
+                "response": direct_answer,
+                "raw_result": None,
+            }
+        except Exception as e:
+            return {
+                "tools_called": tools_called,
+                "response": f"Error processing response: {str(e)}",
+                "raw_result": None,
+            }
 
     async def _execute_mcp_tool(self, tool_name: str, args: Dict):
         for session in self.sessions:
