@@ -12,7 +12,7 @@
       "error_msg": "Attention: there is an error.",
       "greeting_msg": "Hey, I am Nativa. What are we doing today?"
     },
-    "database_folder": "/home/pedro/Documents/git-repos/NativaGPT/config/functions",
+    "database_folder": "/home/pedro/Documents/uv-projects/NativaGPT/config/functions",
     "embedding_model": "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf",
     "audio_key": "f1",
     "text_key": "f2",
@@ -25,100 +25,19 @@
   "llm_config": {
     "endpoint": "https://api.iaedu.pt/agent-chat//api/v1/agent/cmamvd3n40000c801qeacoad2/stream",
     "channel_id": "cmh92y20g0o48gt01sy1l5k9g",
-    "thread_id": "",
     "model_config": {
-      "setup_prompt": "I'm Nativa, an AI assistant for robot control. I respond with plain text for questions and conversations. I only output JSON commands when you explicitly request an action.\n\nWhen action is needed, I provide this JSON format (no code blocks):\n{\n  \"name\": \"action_name\",\n  \"command\": \"complete_command_with_all_arguments\",\n  \"execution\": \"shell|ros|python|other\",\n  \"location\": \"path_or_empty\",\n  \"parameter\": \"\"\n}\n\n• Commands must be complete and executable as-is (e.g., \"rosservice call /turtle1/teleport_absolute 3.0 6.0 0.0\")\n• Plain text for everything else - explanations, analysis, conversations\n• Only generate new commands if the previous action failed or you request something different. Dont assume things, if the request is ambiguous, ask for clarification.\n\nAlways adhere to these guidelines to ensure safe and effective robot operation, ask 1-3 quetions to get more context."
+      "setup_prompt": "I am Nativa, an AI assistant for robot control.\n\n## CRITICAL RULES FOR IMAGE DESCRIPTION\n\n**When an image is attached to your response:**\n- You MUST describe the image DIRECTLY in your answer\n- DO NOT call any tools to analyze the image\n- DO NOT suggest using analysis tools\n- The VLM (Vision Language Model) that processed the image is ALREADY the analysis tool\n- Just describe what you see in plain text\n\n**Example - CORRECT:**\nUser: \"Describe the camera image\"\nAnswer: \"The image shows a robotic arm with a blue gripper holding a small white box on a table.\"\n\n**Example - WRONG (do not do this):\nUser: \"Describe the camera image\"\nResponse: {\"action\": \"call_tool\", \"tool\": \"analyze_image\", ...}\n\n## TOOL USAGE\nOnly call tools when you need to:\n- Capture new images from ROS topics (use capture_camera_image)\n- Execute ROS commands (list_topics, read_topic, get_topic_info, get_system_status)\n- Get weather info (get_forecast, get_alerts)\n\nWhen a tool captures an image, it will be automatically attached to your context.\nIf the user asks \"what do you see\" or \"describe this image\", provide the description directly.\n\n## RESPONSE FORMAT\n- Plain text for descriptions, conversations, and image analysis\n- JSON only for tool execution requests\n- Be concise but detailed in visual descriptions"
     }
   },
   "mcp": {
     "enabled": true,
     "mcp_servers": {
       "weather_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
+        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
       },
       "ros1_mcp": {
-        "host": "/home/pedro/Documents/git-repos/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros1.py"
+        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros1.py"
       }
-    }
-  },
-  "topic_config": {
-    "enable_persistent_subscriptions": false,
-    "auto_process_topics": false,
-    "subscriptions": {
-      "ros_topics": [
-        {
-          "name": "/turtle1/pose",
-          "message_type": "turtlesim/Pose",
-          "enabled": true,
-          "timeout": 2.0
-        },
-        {
-          "name": "/camera_rgb/image_raw",
-          "message_type": "sensor_msgs/Image",
-          "enabled": true,
-          "timeout": 2.0
-        },
-        {
-          "name": "/joint_states",
-          "message_type": "sensor_msgs/JointState",
-          "enabled": false,
-          "timeout": 2.0
-        }
-      ],
-      "mqtt_topics": [
-        {
-          "name": "sensors/temperature",
-          "broker_host": "localhost",
-          "broker_port": 1883,
-          "enabled": false,
-          "timeout": 2.0
-        },
-        {
-          "name": "robot/commands",
-          "broker_host": "localhost",
-          "broker_port": 1883,
-          "enabled": false,
-          "timeout": 2.0
-        }
-      ],
-      "file_topics": [
-        {
-          "name": "/var/log/syslog",
-          "poll_interval": 2.0,
-          "enabled": false,
-          "auto_analysis": false,
-          "vlm_analysis": false,
-          "vla_analysis": false
-        },
-        {
-          "name": "/home/pedrodias/Documents/git-repos/NativaGPT/logs/app.log",
-          "poll_interval": 1.0,
-          "enabled": true,
-          "auto_analysis": false,
-          "vlm_analysis": false,
-          "vla_analysis": false
-        },
-        {
-          "name": "/tmp/security_images",
-          "poll_interval": 5.0,
-          "enabled": true,
-          "auto_analysis": true,
-          "vlm_analysis": true,
-          "vla_analysis": true,
-          "analysis_type": "security",
-          "file_pattern": "*.jpg"
-        },
-        {
-          "name": "/tmp/robot_observations",
-          "poll_interval": 1.0,
-          "enabled": true,
-          "auto_analysis": true,
-          "vlm_analysis": true,
-          "vla_analysis": true,
-          "analysis_type": "robot_task",
-          "file_pattern": "*.jpg"
-        }
-      ]
     }
   },
   "stt_config": {

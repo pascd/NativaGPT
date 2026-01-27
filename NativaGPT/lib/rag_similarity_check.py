@@ -172,10 +172,27 @@ class RAGSimilarityCheck():
         for entry, embedding, searchable_text in self.vector_db:
             try:
                 similarity = self._get_cosine_similarity(query_embedding, embedding)
+
+                if isinstance(entry, dict):
+                    logger.info('ORIGINAL JSON')
+                    # Use logger.info for multi-line output
+                    for line in json.dumps(entry, indent=2).splitlines():
+                        logger.info(line)
+
+                    logger.info('\n--- TOON CONVERSION ---')
+                    entry = convert_json_to_toon(entry)
+                    for line in toon_output.splitlines():
+                        logger.info(line)
+                else:
+                    # Handle non-dict entries (like plain text)
+                    logger.info(f'--- Text Entry ---')
+                    logger.info(entry)
+
                 similarities.append((entry, similarity, searchable_text))
             except Exception as e:
                 logger.error(f"Error calculating similarity: {e}")
                 continue
+
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:top_n]
 
@@ -188,7 +205,6 @@ class RAGSimilarityCheck():
             "database_folder": self.database_folder
         }
 
-# <--- ADDED: New function to convert JSON to TOON ---
 def convert_json_to_toon(data: dict) -> str:
     """
     Converts a function JSON object (as used in your RAG)
@@ -204,22 +220,22 @@ def convert_json_to_toon(data: dict) -> str:
     indent = "  "
     toon = []
 
-    # 1. Function Header (Class Instantiation)
+    # Function Header (Class Instantiation)
     name = func.get("name", "unknown_function")
     desc = func.get("description", "")
     toon.append(f'@Function(name="{name}", description="{desc}") {{')
 
-    # 2. Simple top-level properties (like command)
+    # Simple top-level properties (like command)
     if "command" in func:
         # Use json.dumps to correctly format string values
         toon.append(f'{indent}command: {json.dumps(func["command"])}')
 
-    # 3. Parameters Block
+    # Parameters Block
     params = func.get("parameters", {})
     if params and isinstance(params, dict):
         toon.append(f'{indent}@Parameters {{')
 
-        # 3a. Properties
+        # Properties
         props = params.get("properties", {})
         if props:
             for prop_name, details in props.items():
@@ -229,7 +245,7 @@ def convert_json_to_toon(data: dict) -> str:
                     toon.append(f'{indent}{indent}{indent}{key}: {json.dumps(val)}')
                 toon.append(f'{indent}{indent}}}') # Close @Property
 
-        # 3b. Required
+        # Required
         required = params.get("required", [])
         if required:
             toon.append(f'{indent}{indent}required: {json.dumps(required)}')
@@ -240,8 +256,6 @@ def convert_json_to_toon(data: dict) -> str:
 
     # Join all lines with a newline
     return "\n".join(toon)
-# <--- END OF ADDED FUNCTION ---
-
 
 if __name__ == "__main__":
     # Example config path, update as needed
@@ -275,19 +289,14 @@ if __name__ == "__main__":
 
             logger.info('Retrieved knowledge:')
 
-            # <--- MODIFIED: Updated loop to show JSON and TOON ---
             for i, (entry, similarity, searchable_text) in enumerate(retrieved_knowledge, 1):
-                # Use a clear separator
-                logger.info(f'\n---------- Result {i} | Similarity: {similarity:.3f} ----------')
 
                 if isinstance(entry, dict):
-                    # --- 1. Original JSON (for comparison) ---
-                    logger.info('--- ORIGINAL JSON ---')
+                    logger.info('ORIGINAL JSON')
                     # Use logger.info for multi-line output
                     for line in json.dumps(entry, indent=2).splitlines():
                         logger.info(line)
 
-                    # --- 2. TOON Conversion ---
                     logger.info('\n--- TOON CONVERSION ---')
                     toon_output = convert_json_to_toon(entry)
                     for line in toon_output.splitlines():

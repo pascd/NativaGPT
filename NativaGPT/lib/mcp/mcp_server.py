@@ -1,6 +1,7 @@
 from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
+from NativaGPT.lib.coloring_logger import logger
 
 # Initialize FastMCP server
 mcp = FastMCP("weather")

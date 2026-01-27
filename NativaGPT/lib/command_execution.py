@@ -24,6 +24,7 @@ from NativaGPT.lib.coloring_logger import logger
 
 def timeit(func):
     """Decorator to measure function execution time."""
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         start = time.time()
@@ -31,6 +32,7 @@ def timeit(func):
         elapsed = (time.time() - start) * 1000
         logger.debug(f"⏱️ {func.__name__}: {elapsed:.1f}ms")
         return result
+
     return wrapper
 
 
@@ -55,79 +57,308 @@ class CommandExecution:
 
     # More comprehensive ROS1 patterns
     _ROS1_ECHO_PATTERN = re.compile(
-        r'rostopic\s+echo\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
+        r"rostopic\s+echo\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE
     )
     _ROS1_INFO_PATTERN = re.compile(
-        r'rostopic\s+info\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
+        r"rostopic\s+info\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE
     )
-    _ROS1_HZ_PATTERN = re.compile(
-        r'rostopic\s+hz\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
-    )
+    _ROS1_HZ_PATTERN = re.compile(r"rostopic\s+hz\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE)
 
     # More comprehensive ROS2 patterns
     _ROS2_ECHO_PATTERN = re.compile(
-        r'ros2\s+topic\s+echo\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
+        r"ros2\s+topic\s+echo\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE
     )
     _ROS2_INFO_PATTERN = re.compile(
-        r'ros2\s+topic\s+info\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
+        r"ros2\s+topic\s+info\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE
     )
     _ROS2_HZ_PATTERN = re.compile(
-        r'ros2\s+topic\s+hz\s+([/\w\-]+)(?:\s|$)',
-        re.IGNORECASE
+        r"ros2\s+topic\s+hz\s+([/\w\-]+)(?:\s|$)", re.IGNORECASE
     )
 
     # Enhanced file patterns with more extensions
     _FILE_PATTERNS = {
-        'image': re.compile(
-            r'([\/\w\-\.]+\.(?:png|jpg|jpeg|gif|bmp|tiff?|webp|svg|ico))',
-            re.IGNORECASE
+        "image": re.compile(
+            r"([\/\w\-\.]+\.(?:png|jpg|jpeg|gif|bmp|tiff?|webp|svg|ico))", re.IGNORECASE
         ),
-        'pointcloud': re.compile(
-            r'([\/\w\-\.]+\.(?:pcd|ply|xyz|pts|las|laz|e57))',
-            re.IGNORECASE
+        "pointcloud": re.compile(
+            r"([\/\w\-\.]+\.(?:pcd|ply|xyz|pts|las|laz|e57))", re.IGNORECASE
         ),
-        'structured': re.compile(
-            r'([\/\w\-\.]+\.(?:json|yaml|yml|xml|toml))',
-            re.IGNORECASE
+        "structured": re.compile(
+            r"([\/\w\-\.]+\.(?:json|yaml|yml|xml|toml))", re.IGNORECASE
         ),
-        'csv': re.compile(
-            r'([\/\w\-\.]+\.(?:csv|tsv|dat))',
-            re.IGNORECASE
-        ),
-        'rosbag': re.compile(
-            r'([\/\w\-\.]+\.(?:bag|db3))',
-            re.IGNORECASE
-        ),
+        "csv": re.compile(r"([\/\w\-\.]+\.(?:csv|tsv|dat))", re.IGNORECASE),
+        "rosbag": re.compile(r"([\/\w\-\.]+\.(?:bag|db3))", re.IGNORECASE),
     }
 
     # Enhanced error detection
-    _ERROR_KEYWORDS = frozenset([
-        'error', 'exception', 'traceback', 'fatal', 'failed', 'failure',
-        'no such file', 'cannot', 'permission denied', 'not found',
-        'segmentation fault', 'core dumped', 'killed', 'aborted',
-        'warning', 'critical', 'panic', 'invalid', 'unable to',
-    ])
+    _ERROR_KEYWORDS = frozenset(
+        [
+            "error",
+            "exception",
+            "traceback",
+            "fatal",
+            "failed",
+            "failure",
+            "no such file",
+            "cannot",
+            "permission denied",
+            "not found",
+            "segmentation fault",
+            "core dumped",
+            "killed",
+            "aborted",
+            "warning",
+            "critical",
+            "panic",
+            "invalid",
+            "unable to",
+        ]
+    )
 
     # ROS-specific error patterns
     _ROS_ERROR_PATTERN = re.compile(
-        r'\[(ERROR|FATAL|WARN)\]|roslaunch|Unable to communicate',
-        re.IGNORECASE
+        r"\[(ERROR|FATAL|WARN)\]|roslaunch|Unable to communicate", re.IGNORECASE
     )
+
+    # ==================== ERROR DIAGNOSIS & AUTO-FIX SYSTEM ====================
+
+    # Comprehensive error patterns with diagnosis and fixes
+    _ERROR_DIAGNOSIS_PATTERNS = [
+        # ROS-specific errors
+        {
+            "pattern": re.compile(r"roscore.*not running", re.IGNORECASE),
+            "category": "ROS_CORE_NOT_RUNNING",
+            "diagnosis": "ROS master (roscore) is not running",
+            "severity": "critical",
+            "fixes": [
+                "Start ROS master: roscore",
+                "If using ROS 2: source your ROS 2 workspace and run: ros2 launch",
+                "Check if ROS environment is sourced: echo $ROS_DISTRO",
+            ],
+        },
+        {
+            "pattern": re.compile(
+                r"Unable to communicate with r\w+master", re.IGNORECASE
+            ),
+            "category": "ROS_MASTER_UNAVAILABLE",
+            "diagnosis": "Cannot communicate with ROS master",
+            "severity": "critical",
+            "fixes": [
+                "Ensure roscore is running in a terminal",
+                "Check ROS_MASTER_URI environment variable: echo $ROS_MASTER_URI",
+                "Verify network connectivity (if using remote master)",
+                "Try: export ROS_MASTER_URI=http://localhost:11311",
+            ],
+        },
+        {
+            "pattern": re.compile(r"no such package", re.IGNORECASE),
+            "category": "PACKAGE_NOT_FOUND",
+            "diagnosis": "ROS package not found",
+            "severity": "error",
+            "fixes": [
+                "Check if package is installed: rospack find <package_name>",
+                "Build your workspace: cd ~/catkin_ws && catkin_make",
+                "Source your workspace: source ~/catkin_ws/devel/setup.bash",
+                "For ROS 2: cd ~/ros2_ws && colcon build && source install/setup.bash",
+            ],
+        },
+        {
+            "pattern": re.compile(r"cannot find.*launch", re.IGNORECASE),
+            "category": "LAUNCH_FILE_NOT_FOUND",
+            "diagnosis": "Launch file not found",
+            "severity": "error",
+            "fixes": [
+                "Verify the launch file path is correct",
+                "Check if package is built: catkin_make or colcon build",
+                "List available launch files: roslaunch <package> --ros-args --list",
+            ],
+        },
+        {
+            "pattern": re.compile(r"connection refused", re.IGNORECASE),
+            "category": "CONNECTION_REFUSED",
+            "diagnosis": "Connection refused by node or service",
+            "severity": "error",
+            "fixes": [
+                "Ensure the target node/service is running",
+                "Check if nodes are initialized: rosnode list",
+                "Verify service is available: rosservice list",
+                "Wait for node to initialize before calling service",
+            ],
+        },
+        {
+            "pattern": re.compile(r"service.*not available", re.IGNORECASE),
+            "category": "SERVICE_UNAVAILABLE",
+            "diagnosis": "Required ROS service is not available",
+            "severity": "error",
+            "fixes": [
+                "Check available services: rosservice list",
+                "Ensure the service provider node is running",
+                "For turtlesim: make sure turtlesim node is running first",
+            ],
+        },
+        {
+            "pattern": re.compile(r"topic.*not found", re.IGNORECASE),
+            "category": "TOPIC_NOT_FOUND",
+            "diagnosis": "ROS topic does not exist",
+            "severity": "error",
+            "fixes": [
+                "List available topics: rostopic list",
+                "Check topic spelling and namespace",
+                "Ensure publisher is publishing to the topic",
+                "For ROS 2: ros2 topic list",
+            ],
+        },
+        {
+            "pattern": re.compile(r"topic.*type mismatch", re.IGNORECASE),
+            "category": "TOPIC_TYPE_MISMATCH",
+            "diagnosis": "Topic message type does not match",
+            "severity": "error",
+            "fixes": [
+                "Check topic type: rostopic type <topic>",
+                "Use correct message type for publishing",
+                "Verify the publisher and subscriber use same message type",
+            ],
+        },
+        {
+            "pattern": re.compile(r"parameter.*not found", re.IGNORECASE),
+            "category": "PARAMETER_NOT_FOUND",
+            "diagnosis": "ROS parameter not found",
+            "severity": "warning",
+            "fixes": [
+                "List parameters: rosparam list",
+                "Check parameter name and namespace",
+                "Set parameter: rosparam set /param_name value",
+            ],
+        },
+        # Turtlesim-specific errors
+        {
+            "pattern": re.compile(r"turtlesim.*not running", re.IGNORECASE),
+            "category": "TURTLESIM_NOT_RUNNING",
+            "diagnosis": "Turtlesim node is not running",
+            "severity": "critical",
+            "fixes": [
+                "Start turtlesim: rosrun turtlesim turtlesim_node",
+                "Or use launch file: roslaunch turtlesim neverest_simulation.launch",
+                "For ROS 2: ros2 run turtlesim turtlesim_node",
+            ],
+        },
+        # General system errors
+        {
+            "pattern": re.compile(r"no such file or directory", re.IGNORECASE),
+            "category": "FILE_NOT_FOUND",
+            "diagnosis": "File or directory does not exist",
+            "severity": "error",
+            "fixes": [
+                "Check the file path is correct",
+                "Verify the file exists: ls -la <path>",
+                "Use absolute paths when possible",
+                "Create the file if needed",
+            ],
+        },
+        {
+            "pattern": re.compile(r"permission denied", re.IGNORECASE),
+            "category": "PERMISSION_DENIED",
+            "diagnosis": "Permission denied to access file or resource",
+            "severity": "error",
+            "fixes": [
+                "Check file permissions: ls -la <path>",
+                "Add execute permission: chmod +x <file>",
+                "Run with sudo if required (use caution)",
+                "Check ownership: chown <user>:<group> <path>",
+            ],
+        },
+        {
+            "pattern": re.compile(r"command not found", re.IGNORECASE),
+            "category": "COMMAND_NOT_FOUND",
+            "diagnosis": "Command executable not found",
+            "severity": "error",
+            "fixes": [
+                "Install the required package",
+                "Check if binary is in PATH: which <command>",
+                "Source the ROS workspace",
+                "Verify package installation: dpkg -l | grep <package>",
+            ],
+        },
+        {
+            "pattern": re.compile(r"import error|module not found", re.IGNORECASE),
+            "category": "PYTHON_IMPORT_ERROR",
+            "diagnosis": "Python module import failed",
+            "severity": "error",
+            "fixes": [
+                "Install required Python package: pip install <module>",
+                "Install ROS Python package: sudo apt install ros-<distro>-<package>",
+                "Check Python version compatibility",
+                "Verify PYTHONPATH includes the module location",
+            ],
+        },
+        {
+            "pattern": re.compile(r"segmentation fault|core dumped", re.IGNORECASE),
+            "category": "SEGMENTATION_FAULT",
+            "diagnosis": "Process crashed with segmentation fault",
+            "severity": "critical",
+            "fixes": [
+                "Check for memory issues or invalid pointers",
+                "Review recent code changes",
+                "Run with gdb for debugging: gdb --args <command>",
+                "Check system resources: free -h, dmesg | tail",
+            ],
+        },
+        {
+            "pattern": re.compile(r"timeout", re.IGNORECASE),
+            "category": "TIMEOUT",
+            "diagnosis": "Operation timed out",
+            "severity": "warning",
+            "fixes": [
+                "Increase timeout value",
+                "Check network connectivity",
+                "Verify the target service is responsive",
+                "Reduce data size if processing large messages",
+            ],
+        },
+        {
+            "pattern": re.compile(r"environment variable.*not set", re.IGNORECASE),
+            "category": "ENV_VAR_NOT_SET",
+            "diagnosis": "Required environment variable is not set",
+            "severity": "error",
+            "fixes": [
+                "Set the environment variable: export VAR_NAME=value",
+                "Add to ~/.bashrc for persistence",
+                "Common ROS vars: ROS_MASTER_URI, ROS_HOME, ROS_PACKAGE_PATH",
+                "Source ROS setup: source /opt/ros/<distro>/setup.bash",
+            ],
+        },
+        {
+            "pattern": re.compile(r"address already in use", re.IGNORECASE),
+            "category": "PORT_IN_USE",
+            "diagnosis": "Network port already in use",
+            "severity": "error",
+            "fixes": [
+                "Find process using port: lsof -i :<port>",
+                "Kill the process: kill <PID>",
+                "Use a different port",
+                "Check for zombie processes",
+            ],
+        },
+        {
+            "pattern": re.compile(r"xmlrpc.*error|rosrpc.*error", re.IGNORECASE),
+            "category": "XMLRPC_ERROR",
+            "diagnosis": "XML-RPC communication error",
+            "severity": "error",
+            "fixes": [
+                "Restart roscore",
+                "Check network firewall settings",
+                "Verify ROS_MASTER_URI is correct",
+                "Ensure all nodes are on same network",
+            ],
+        },
+    ]
 
     def __init__(self, topic_reader_handler=None):
         self._proc_registry: Dict[int, Dict[str, Any]] = {}
         self.topic_reader = topic_reader_handler
 
         # Thread pool with optimized worker count
-        self.executor = ThreadPoolExecutor(
-            max_workers=8,
-            thread_name_prefix="cmd_exec"
-        )
+        self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="cmd_exec")
 
         # Enhanced caching
         self._topic_config_cache: Dict[str, Dict[str, Any]] = {}
@@ -148,6 +379,38 @@ class CommandExecution:
 
         logger.info("CommandExecution v3.0 initialized (lazy ROS mode)")
 
+        # Performance optimization: Pre-warm common command shells
+        self._shell_warmed = False
+        self._ros_env_checked = False
+        self._start_warmup()
+
+    def _start_warmup(self):
+        """Background warmup for faster subsequent commands."""
+
+        def warmup():
+            try:
+                # Pre-spawn a shell to warm up subprocess
+                import subprocess
+
+                test_proc = subprocess.run(
+                    ["echo", "warmup"], capture_output=True, timeout=1
+                )
+                self._shell_warmed = True
+
+                # Quick ROS environment check
+                if rospy:
+                    import os
+
+                    if os.environ.get("ROS_DISTRO"):
+                        self._ros_env_checked = True
+
+                logger.debug("✓ Command execution warmup complete")
+            except Exception as e:
+                logger.debug(f"Warmup skipped: {e}")
+
+        warmup_thread = threading.Thread(target=warmup, daemon=True)
+        warmup_thread.start()
+
     def _ensure_ros_initialized(self) -> bool:
         """Lazy ROS initialization - only when first needed."""
         if self._ros_initialized:
@@ -163,10 +426,10 @@ class CommandExecution:
             try:
                 if not rospy.core.is_initialized():
                     rospy.init_node(
-                        'nativagpt_cmd_exec',
+                        "nativagpt_cmd_exec",
                         anonymous=True,
                         disable_signals=True,
-                        log_level=rospy.ERROR  # Reduce logging overhead
+                        log_level=rospy.ERROR,  # Reduce logging overhead
                     )
                     logger.info("ROS node initialized (lazy)")
                 self._ros_initialized = True
@@ -209,10 +472,10 @@ class CommandExecution:
             for op, times in self._metrics.items():
                 if times:
                     stats[op] = {
-                        'avg_ms': sum(times) / len(times),
-                        'min_ms': min(times),
-                        'max_ms': max(times),
-                        'count': len(times)
+                        "avg_ms": sum(times) / len(times),
+                        "min_ms": min(times),
+                        "max_ms": max(times),
+                        "count": len(times),
                     }
         return stats
 
@@ -229,66 +492,66 @@ class CommandExecution:
         match = self._ROS1_ECHO_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros1',
-                'operation': 'echo',
-                'topic_name': match.group(1),
-                'once': any(x in cmd_lower for x in ['-n 1', '-n1', '--once', '-n=1'])
+                "is_ros_topic": True,
+                "ros_version": "ros1",
+                "operation": "echo",
+                "topic_name": match.group(1),
+                "once": any(x in cmd_lower for x in ["-n 1", "-n1", "--once", "-n=1"]),
             }
 
         # ROS2 echo
         match = self._ROS2_ECHO_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros2',
-                'operation': 'echo',
-                'topic_name': match.group(1),
-                'once': '--once' in cmd_lower or '--times 1' in cmd_lower
+                "is_ros_topic": True,
+                "ros_version": "ros2",
+                "operation": "echo",
+                "topic_name": match.group(1),
+                "once": "--once" in cmd_lower or "--times 1" in cmd_lower,
             }
 
         # ROS1 info
         match = self._ROS1_INFO_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros1',
-                'operation': 'info',
-                'topic_name': match.group(1),
-                'once': True
+                "is_ros_topic": True,
+                "ros_version": "ros1",
+                "operation": "info",
+                "topic_name": match.group(1),
+                "once": True,
             }
 
         # ROS2 info
         match = self._ROS2_INFO_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros2',
-                'operation': 'info',
-                'topic_name': match.group(1),
-                'once': True
+                "is_ros_topic": True,
+                "ros_version": "ros2",
+                "operation": "info",
+                "topic_name": match.group(1),
+                "once": True,
             }
 
         # ROS1 hz
         match = self._ROS1_HZ_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros1',
-                'operation': 'hz',
-                'topic_name': match.group(1),
-                'once': False
+                "is_ros_topic": True,
+                "ros_version": "ros1",
+                "operation": "hz",
+                "topic_name": match.group(1),
+                "once": False,
             }
 
         # ROS2 hz
         match = self._ROS2_HZ_PATTERN.search(cmd_lower)
         if match:
             return {
-                'is_ros_topic': True,
-                'ros_version': 'ros2',
-                'operation': 'hz',
-                'topic_name': match.group(1),
-                'once': False
+                "is_ros_topic": True,
+                "ros_version": "ros2",
+                "operation": "hz",
+                "topic_name": match.group(1),
+                "once": False,
             }
 
         return None
@@ -322,43 +585,53 @@ class CommandExecution:
         3. Dynamic reading (slow but works for any topic)
         """
         if not self.topic_reader:
-            return {'success': False, 'error': 'TopicReaderHandler not available'}
+            return {"success": False, "error": "TopicReaderHandler not available"}
 
-        topic_name = topic_info.get('topic_name')
+        topic_name = topic_info.get("topic_name")
 
         try:
             # Tier 1: Check if we have pre-subscribed data
-            if self.topic_reader and hasattr(self.topic_reader, '_latest_ros_messages'):
+            if self.topic_reader and hasattr(self.topic_reader, "_latest_ros_messages"):
                 with self.topic_reader._ros_lock:
                     if topic_name in self.topic_reader._latest_ros_messages:
-                        msg, timestamp = self.topic_reader._latest_ros_messages[topic_name]
+                        msg, timestamp = self.topic_reader._latest_ros_messages[
+                            topic_name
+                        ]
 
                         # Check if message is fresh enough (< 10 seconds old)
                         age = time.time() - timestamp
                         if age < 10.0:
-                            logger.info(f"Using pre-subscribed data for {topic_name} (age: {age:.1f}s)")
+                            logger.info(
+                                f"Using pre-subscribed data for {topic_name} (age: {age:.1f}s)"
+                            )
 
                             # Convert using existing logic
                             topic_config = self._topic_config_cache.get(topic_name, {})
-                            msg_type = topic_config.get('message_type', 'unknown')
+                            msg_type = topic_config.get("message_type", "unknown")
 
-                            modality, data, extra = self.topic_reader._convert_ros_message(
-                                msg_type, msg
+                            modality, data, extra = (
+                                self.topic_reader._convert_ros_message(msg_type, msg)
                             )
 
                             result = {
-                                'success': True,
-                                'topic_name': topic_name,
-                                'modality': modality,
-                                'data': data,
-                                'message_type': msg_type,
-                                'timestamp': datetime.fromtimestamp(timestamp).isoformat(),
-                                'files': [],
-                                'source': 'pre_subscribed'
+                                "success": True,
+                                "topic_name": topic_name,
+                                "modality": modality,
+                                "data": data,
+                                "message_type": msg_type,
+                                "timestamp": datetime.fromtimestamp(
+                                    timestamp
+                                ).isoformat(),
+                                "files": [],
+                                "source": "pre_subscribed",
                             }
 
-                            if modality == 'image' and isinstance(data, str) and os.path.exists(data):
-                                result['files'].append(data)
+                            if (
+                                modality == "image"
+                                and isinstance(data, str)
+                                and os.path.exists(data)
+                            ):
+                                result["files"].append(data)
 
                             return result
 
@@ -375,20 +648,20 @@ class CommandExecution:
                     logger.info(f"No cached data, falling back to dynamic read")
                 else:
                     result = {
-                        'success': True,
-                        'topic_name': topic_name,
-                        'modality': topic_data.get('modality'),
-                        'data': topic_data.get('data'),
-                        'message_type': topic_data.get('extra', {}).get('message_type'),
-                        'timestamp': topic_data.get('timestamp'),
-                        'files': [],
-                        'source': 'cached_config'
+                        "success": True,
+                        "topic_name": topic_name,
+                        "modality": topic_data.get("modality"),
+                        "data": topic_data.get("data"),
+                        "message_type": topic_data.get("extra", {}).get("message_type"),
+                        "timestamp": topic_data.get("timestamp"),
+                        "files": [],
+                        "source": "cached_config",
                     }
 
-                    if result['modality'] == 'image':
-                        data_path = topic_data.get('data')
+                    if result["modality"] == "image":
+                        data_path = topic_data.get("data")
                         if data_path and os.path.exists(data_path):
-                            result['files'].append(data_path)
+                            result["files"].append(data_path)
 
                     return result
 
@@ -398,19 +671,13 @@ class CommandExecution:
 
         except Exception as e:
             logger.error(f"Error reading ROS topic {topic_name}: {e}")
-            return {
-                'success': False,
-                'error': f'Failed to read topic: {str(e)}'
-            }
+            return {"success": False, "error": f"Failed to read topic: {str(e)}"}
 
     # ==================== ENHANCED DYNAMIC TOPIC READING ====================
 
     @timeit
     def _read_ros_topic_dynamic(
-        self,
-        topic_name: str,
-        timeout: float = 2.0,
-        max_wait: float = 5.0
+        self, topic_name: str, timeout: float = 2.0, max_wait: float = 5.0
     ) -> Dict[str, Any]:
         """
         Enhanced dynamic topic reading with:
@@ -420,7 +687,7 @@ class CommandExecution:
         - Performance tracking
         """
         if not self._ensure_ros_initialized():
-            return {'success': False, 'error': 'rospy not available'}
+            return {"success": False, "error": "rospy not available"}
 
         start_time = time.time()
 
@@ -430,20 +697,20 @@ class CommandExecution:
 
             if topic_type is None:
                 return {
-                    'success': False,
-                    'error': f'Topic {topic_name} not found or has no publishers'
+                    "success": False,
+                    "error": f"Topic {topic_name} not found or has no publishers",
                 }
 
             logger.info(f"Dynamically reading {topic_name} (type: {topic_type._type})")
 
             # Use Event for instant timeout response
-            received_msg = {'msg': None, 'timestamp': None}
+            received_msg = {"msg": None, "timestamp": None}
             msg_event = threading.Event()
 
             def callback(msg):
                 if not msg_event.is_set():  # Only capture first message
-                    received_msg['msg'] = msg
-                    received_msg['timestamp'] = time.time()
+                    received_msg["msg"] = msg
+                    received_msg["timestamp"] = time.time()
                     msg_event.set()
 
             # Create temporary subscriber
@@ -453,54 +720,61 @@ class CommandExecution:
                 # Wait with instant response on message arrival
                 if not msg_event.wait(timeout=min(timeout, max_wait)):
                     elapsed = (time.time() - start_time) * 1000
-                    self._record_metric('topic_read_timeout', elapsed)
+                    self._record_metric("topic_read_timeout", elapsed)
                     return {
-                        'success': False,
-                        'error': f'Timeout waiting for message on {topic_name} ({timeout:.1f}s)'
+                        "success": False,
+                        "error": f"Timeout waiting for message on {topic_name} ({timeout:.1f}s)",
                     }
 
                 # Message received!
                 elapsed = (time.time() - start_time) * 1000
-                self._record_metric('topic_read_success', elapsed)
+                self._record_metric("topic_read_success", elapsed)
                 logger.info(f"✓ Topic read in {elapsed:.1f}ms")
 
                 # Convert the message
                 if self.topic_reader:
                     msg_type_str = topic_type._type
                     modality, data, extra = self.topic_reader._convert_ros_message(
-                        msg_type_str,
-                        received_msg['msg']
+                        msg_type_str, received_msg["msg"]
                     )
 
                     result = {
-                        'success': True,
-                        'topic_name': topic_name,
-                        'modality': modality,
-                        'data': data,
-                        'message_type': msg_type_str,
-                        'timestamp': datetime.fromtimestamp(received_msg['timestamp']).isoformat(),
-                        'files': [],
-                        'source': 'dynamic',
-                        'read_time_ms': elapsed
+                        "success": True,
+                        "topic_name": topic_name,
+                        "modality": modality,
+                        "data": data,
+                        "message_type": msg_type_str,
+                        "timestamp": datetime.fromtimestamp(
+                            received_msg["timestamp"]
+                        ).isoformat(),
+                        "files": [],
+                        "source": "dynamic",
+                        "read_time_ms": elapsed,
                     }
 
                     # Add image file if applicable
-                    if modality == 'image' and isinstance(data, str) and os.path.exists(data):
-                        result['files'].append(data)
+                    if (
+                        modality == "image"
+                        and isinstance(data, str)
+                        and os.path.exists(data)
+                    ):
+                        result["files"].append(data)
 
                     return result
                 else:
                     # Fallback without TopicReaderHandler
                     return {
-                        'success': True,
-                        'topic_name': topic_name,
-                        'modality': 'text',
-                        'data': str(received_msg['msg']),
-                        'message_type': topic_type._type,
-                        'timestamp': datetime.fromtimestamp(received_msg['timestamp']).isoformat(),
-                        'files': [],
-                        'source': 'dynamic',
-                        'read_time_ms': elapsed
+                        "success": True,
+                        "topic_name": topic_name,
+                        "modality": "text",
+                        "data": str(received_msg["msg"]),
+                        "message_type": topic_type._type,
+                        "timestamp": datetime.fromtimestamp(
+                            received_msg["timestamp"]
+                        ).isoformat(),
+                        "files": [],
+                        "source": "dynamic",
+                        "read_time_ms": elapsed,
                     }
 
             finally:
@@ -513,18 +787,14 @@ class CommandExecution:
         except Exception as e:
             logger.error(f"Error dynamically reading topic {topic_name}: {e}")
             import traceback
+
             traceback.print_exc()
-            return {
-                'success': False,
-                'error': f'Failed to read topic: {str(e)}'
-            }
+            return {"success": False, "error": f"Failed to read topic: {str(e)}"}
 
     # ==================== BATCH TOPIC READING ====================
 
     def read_multiple_topics(
-        self,
-        topic_names: List[str],
-        timeout: float = 2.0
+        self, topic_names: List[str], timeout: float = 2.0
     ) -> Dict[str, Dict[str, Any]]:
         """
         Read multiple topics in parallel.
@@ -533,17 +803,12 @@ class CommandExecution:
         results = {}
 
         def read_single(topic_name):
-            topic_info = {
-                'topic_name': topic_name,
-                'operation': 'echo',
-                'once': True
-            }
+            topic_info = {"topic_name": topic_name, "operation": "echo", "once": True}
             return topic_name, self._read_ros_topic_directly(topic_info)
 
         # Submit all reads in parallel
         futures = {
-            self.executor.submit(read_single, name): name
-            for name in topic_names
+            self.executor.submit(read_single, name): name for name in topic_names
         }
 
         # Collect results
@@ -554,12 +819,100 @@ class CommandExecution:
             except Exception as e:
                 topic_name = futures[future]
                 logger.error(f"Error reading {topic_name}: {e}")
-                results[topic_name] = {
-                    'success': False,
-                    'error': str(e)
-                }
+                results[topic_name] = {"success": False, "error": str(e)}
 
         return results
+
+    # ==================== ERROR DIAGNOSIS METHODS ====================
+
+    def diagnose_error(
+        self, stdout: str, stderr: str, command: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Diagnose command errors and suggest fixes.
+
+        Returns:
+            Dict with:
+                - has_error: bool
+                - category: str (error category)
+                - diagnosis: str (human-readable diagnosis)
+                - severity: str (critical, error, warning)
+                - fixes: List[str] (suggested fixes)
+                - original_error: str (error snippet)
+        """
+        combined = f"{stdout}\n{stderr}"
+        if not combined.strip():
+            return {"has_error": False}
+
+        combined_lower = combined.lower()
+
+        for error_info in self._ERROR_DIAGNOSIS_PATTERNS:
+            if error_info["pattern"].search(combined_lower):
+                # Find the matching line for context
+                lines = combined.split("\n")
+                matching_line = ""
+                for line in lines:
+                    if error_info["pattern"].search(line.lower()):
+                        matching_line = line.strip()
+                        break
+
+                return {
+                    "has_error": True,
+                    "category": error_info["category"],
+                    "diagnosis": error_info["diagnosis"],
+                    "severity": error_info["severity"],
+                    "fixes": error_info["fixes"],
+                    "original_error": matching_line[:200]
+                    if matching_line
+                    else combined[:200],
+                    "command": command,
+                }
+
+        # Generic error if no specific pattern matched
+        if self._default_error_match(combined):
+            return {
+                "has_error": True,
+                "category": "GENERIC_ERROR",
+                "diagnosis": "Command failed with an error",
+                "severity": "error",
+                "fixes": [
+                    "Check the error message above for details",
+                    "Verify all required services are running",
+                    "Review the command syntax",
+                    "Check system logs for more information: dmesg | tail",
+                ],
+                "original_error": combined[:200],
+                "command": command,
+            }
+
+        return {"has_error": False}
+
+    def format_diagnosis_for_output(self, diagnosis: Dict[str, Any]) -> str:
+        """Format diagnosis result as a human-readable message."""
+        if not diagnosis.get("has_error"):
+            return ""
+
+        severity_icons = {"critical": "🔴", "error": "🟠", "warning": "🟡"}
+
+        icon = severity_icons.get(diagnosis.get("severity", "error"), "❌")
+
+        lines = [
+            f"{icon} **ERROR DIAGNOSIS**",
+            f"Category: {diagnosis.get('category', 'UNKNOWN')}",
+            f"Diagnosis: {diagnosis.get('diagnosis', 'Unknown error')}",
+            "",
+            "**Suggested Fixes:**",
+        ]
+
+        for i, fix in enumerate(diagnosis.get("fixes", []), 1):
+            lines.append(f"  {i}. {fix}")
+
+        if diagnosis.get("original_error"):
+            lines.extend(
+                ["", f"Error snippet: _{diagnosis.get('original_error', '')}_"]
+            )
+
+        return "\n".join(lines)
 
     # ==================== ENHANCED ERROR DETECTION ====================
 
@@ -584,10 +937,7 @@ class CommandExecution:
 
     @timeit
     def _detect_output_type(
-        self,
-        stdout: str,
-        stderr: str,
-        command: str = ""
+        self, stdout: str, stderr: str, command: str = ""
     ) -> Dict[str, Any]:
         """
         Enhanced output type detection with:
@@ -597,35 +947,37 @@ class CommandExecution:
         - Performance tracking
         """
         output_info = {
-            'type': 'text',
-            'files': [],
-            'data': stdout,
-            'has_error': bool(stderr.strip()),
-            'ros_topic_data': None
+            "type": "text",
+            "files": [],
+            "data": stdout,
+            "has_error": bool(stderr.strip()),
+            "ros_topic_data": None,
         }
 
         # Fast error check
         if stderr.strip() and self._default_error_match(stderr):
-            output_info['type'] = 'error'
-            output_info['data'] = stderr
+            output_info["type"] = "error"
+            output_info["data"] = stderr
             return output_info
 
         # ROS topic command check (fast path)
         ros_topic_info = self._parse_ros_topic_command(command)
-        if ros_topic_info and ros_topic_info['operation'] == 'echo':
+        if ros_topic_info and ros_topic_info["operation"] == "echo":
             topic_data = self._read_ros_topic_directly(ros_topic_info)
 
-            if topic_data.get('success'):
-                output_info.update({
-                    'ros_topic_data': topic_data,
-                    'type': topic_data.get('modality', 'text'),
-                    'data': topic_data.get('data'),
-                    'files': topic_data.get('files', []),
-                    'topic_name': topic_data.get('topic_name'),
-                    'message_type': topic_data.get('message_type'),
-                    'timestamp': topic_data.get('timestamp'),
-                    'source': topic_data.get('source', 'unknown')
-                })
+            if topic_data.get("success"):
+                output_info.update(
+                    {
+                        "ros_topic_data": topic_data,
+                        "type": topic_data.get("modality", "text"),
+                        "data": topic_data.get("data"),
+                        "files": topic_data.get("files", []),
+                        "topic_name": topic_data.get("topic_name"),
+                        "message_type": topic_data.get("message_type"),
+                        "timestamp": topic_data.get("timestamp"),
+                        "source": topic_data.get("source", "unknown"),
+                    }
+                )
                 return output_info
             else:
                 logger.warning(f"Failed to read topic: {topic_data.get('error')}")
@@ -665,26 +1017,26 @@ class CommandExecution:
                         found_files.append(match)
                         file_types.append(file_type)
 
-        output_info['files'] = list(set(found_files))
+        output_info["files"] = list(set(found_files))
 
         # Type determination
         if file_types:
-            output_info['type'] = file_types[0]
+            output_info["type"] = file_types[0]
 
         # Enhanced JSON parsing
         if not found_files and not ros_topic_info:
             stripped = stdout.strip()
-            if stripped and (stripped[0] in '{[' or stripped.startswith('```json')):
+            if stripped and (stripped[0] in "{[" or stripped.startswith("```json")):
                 try:
                     # Handle code blocks
-                    if stripped.startswith('```json'):
-                        stripped = stripped.split('```json')[1].split('```')[0].strip()
-                    elif stripped.startswith('```'):
-                        stripped = stripped.split('```')[1].split('```')[0].strip()
+                    if stripped.startswith("```json"):
+                        stripped = stripped.split("```json")[1].split("```")[0].strip()
+                    elif stripped.startswith("```"):
+                        stripped = stripped.split("```")[1].split("```")[0].strip()
 
                     json_data = json.loads(stripped)
-                    output_info['type'] = 'json'
-                    output_info['data'] = json_data
+                    output_info["type"] = "json"
+                    output_info["data"] = json_data
                 except:
                     pass
 
@@ -743,15 +1095,17 @@ class CommandExecution:
 
         # Fast path for ROS topic reads - ALWAYS USE FOR ECHO COMMANDS
         ros_topic_info = self._parse_ros_topic_command(command)
-        if ros_topic_info and ros_topic_info['operation'] == 'echo':
+        if ros_topic_info and ros_topic_info["operation"] == "echo":
             # For echo commands, ALWAYS try direct read first (get one message)
             # This is much faster than subprocess
-            logger.info(f"Using fast path for topic read: {ros_topic_info['topic_name']}")
+            logger.info(
+                f"Using fast path for topic read: {ros_topic_info['topic_name']}"
+            )
             topic_data = self._read_ros_topic_directly(ros_topic_info)
 
-            if topic_data.get('success'):
+            if topic_data.get("success"):
                 elapsed = (time.time() - start_time) * 1000
-                self._record_metric('command_ros_topic', elapsed)
+                self._record_metric("command_ros_topic", elapsed)
 
                 logger.info(
                     f"✓ Direct topic read: {ros_topic_info['topic_name']} "
@@ -759,13 +1113,13 @@ class CommandExecution:
                 )
 
                 output_info = {
-                    'type': topic_data.get('modality', 'text'),
-                    'files': topic_data.get('files', []),
-                    'data': topic_data.get('data'),
-                    'ros_topic_data': topic_data,
-                    'topic_name': topic_data.get('topic_name'),
-                    'message_type': topic_data.get('message_type'),
-                    'has_error': False
+                    "type": topic_data.get("modality", "text"),
+                    "files": topic_data.get("files", []),
+                    "data": topic_data.get("data"),
+                    "ros_topic_data": topic_data,
+                    "topic_name": topic_data.get("topic_name"),
+                    "message_type": topic_data.get("message_type"),
+                    "has_error": False,
                 }
 
                 return {
@@ -777,7 +1131,7 @@ class CommandExecution:
                     "pid": None,
                     "note": "ros_topic_direct_read",
                     "output_info": output_info,
-                    "execution_time_ms": elapsed
+                    "execution_time_ms": elapsed,
                 }
             else:
                 # Direct read failed, log but continue to subprocess fallback
@@ -795,11 +1149,11 @@ class CommandExecution:
             text=True,
             bufsize=8192,
             universal_newlines=True,
-            preexec_fn=os.setsid
+            preexec_fn=os.setsid,
         )
 
         # Adaptive buffer sizing based on command type
-        max_buffer = 8000 if 'rosbag' in command.lower() else 4000
+        max_buffer = 8000 if "rosbag" in command.lower() else 4000
         stdout_buf = deque(maxlen=max_buffer)
         stderr_buf = deque(maxlen=max_buffer)
 
@@ -807,12 +1161,12 @@ class CommandExecution:
         t_out = threading.Thread(
             target=self._reader_thread,
             args=(proc.stdout, stdout_buf, "STDOUT"),
-            daemon=True
+            daemon=True,
         )
         t_err = threading.Thread(
             target=self._reader_thread,
             args=(proc.stderr, stderr_buf, "STDERR"),
-            daemon=True
+            daemon=True,
         )
         t_out.start()
         t_err.start()
@@ -820,7 +1174,9 @@ class CommandExecution:
         match_fn = error_match or self._default_error_match
         detected_error = False
 
-        deadline = time.time() + wait_for_errors_seconds if wait_for_errors_seconds else None
+        deadline = (
+            time.time() + wait_for_errors_seconds if wait_for_errors_seconds else None
+        )
         exit_deadline = time.time() + timeout if timeout else None
 
         # Adaptive polling with exponential backoff
@@ -837,10 +1193,20 @@ class CommandExecution:
 
                 stdout_text = self._join_buffer_efficient(stdout_buf)
                 stderr_text = self._join_buffer_efficient(stderr_buf)
-                output_info = self._detect_output_type(stdout_text, stderr_text, command)
+                output_info = self._detect_output_type(
+                    stdout_text, stderr_text, command
+                )
+
+                # Add error diagnosis
+                if rc != 0 or stderr_text.strip():
+                    diagnosis = self.diagnose_error(stdout_text, stderr_text, command)
+                    output_info["diagnosis"] = diagnosis
+                    if diagnosis.get("has_error"):
+                        diagnosis_msg = self.format_diagnosis_for_output(diagnosis)
+                        logger.warning(f"\n{diagnosis_msg}")
 
                 elapsed = (time.time() - start_time) * 1000
-                self._record_metric('command_completed', elapsed)
+                self._record_metric("command_completed", elapsed)
 
                 logger.info(
                     f"✓ Command completed: rc={rc}, type={output_info.get('type')}, "
@@ -856,7 +1222,7 @@ class CommandExecution:
                     "pid": None,
                     "note": None,
                     "output_info": output_info,
-                    "execution_time_ms": elapsed
+                    "execution_time_ms": elapsed,
                 }
 
             # Check timeouts
@@ -885,10 +1251,18 @@ class CommandExecution:
         stderr_preview = self._join_buffer_efficient(list(stderr_buf)[-400:])
         output_info = self._detect_output_type(stdout_preview, stderr_preview, command)
 
+        # Add error diagnosis for early detection
+        if detected_error or stderr_preview.strip():
+            diagnosis = self.diagnose_error(stdout_preview, stderr_preview, command)
+            output_info["diagnosis"] = diagnosis
+            if diagnosis.get("has_error"):
+                diagnosis_msg = self.format_diagnosis_for_output(diagnosis)
+                logger.warning(f"\n{diagnosis_msg}")
+
         elapsed = (time.time() - start_time) * 1000
 
         if detected_error:
-            self._record_metric('command_error_detected', elapsed)
+            self._record_metric("command_error_detected", elapsed)
             logger.error(f"⚠️ Early error detected (time={elapsed:.1f}ms)")
             return {
                 "command": command,
@@ -899,7 +1273,7 @@ class CommandExecution:
                 "pid": proc.pid,
                 "note": "error_detected_early",
                 "output_info": output_info,
-                "execution_time_ms": elapsed
+                "execution_time_ms": elapsed,
             }
 
         if detach_on_no_error:
@@ -908,9 +1282,9 @@ class CommandExecution:
                 "stdout_buf": stdout_buf,
                 "stderr_buf": stderr_buf,
                 "command": command,
-                "start_time": time.time()
+                "start_time": time.time(),
             }
-            self._record_metric('command_detached', elapsed)
+            self._record_metric("command_detached", elapsed)
             logger.info(f"⏸️ Detached command: PID={proc.pid} (time={elapsed:.1f}ms)")
             return {
                 "command": command,
@@ -921,7 +1295,7 @@ class CommandExecution:
                 "pid": proc.pid,
                 "note": "detached_no_errors_seen",
                 "output_info": output_info,
-                "execution_time_ms": elapsed
+                "execution_time_ms": elapsed,
             }
         else:
             logger.info("⏳ Waiting for command completion...")
@@ -934,7 +1308,7 @@ class CommandExecution:
             output_info = self._detect_output_type(stdout_text, stderr_text, command)
 
             elapsed = (time.time() - start_time) * 1000
-            self._record_metric('command_waited', elapsed)
+            self._record_metric("command_waited", elapsed)
 
             return {
                 "command": command,
@@ -945,7 +1319,7 @@ class CommandExecution:
                 "pid": None,
                 "note": None,
                 "output_info": output_info,
-                "execution_time_ms": elapsed
+                "execution_time_ms": elapsed,
             }
 
     # ==================== PROCESS MANAGEMENT ====================
@@ -999,15 +1373,19 @@ class CommandExecution:
         proc = info["process"]
         running = proc.poll() is None
 
-        stdout_tail = self._join_buffer_efficient(list(info["stdout_buf"])[-tail_lines:])
-        stderr_tail = self._join_buffer_efficient(list(info["stderr_buf"])[-tail_lines:])
+        stdout_tail = self._join_buffer_efficient(
+            list(info["stdout_buf"])[-tail_lines:]
+        )
+        stderr_tail = self._join_buffer_efficient(
+            list(info["stderr_buf"])[-tail_lines:]
+        )
 
         return {
             "pid": pid,
             "running": running,
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
-            "returncode": None if running else proc.returncode
+            "returncode": None if running else proc.returncode,
         }
 
     # ==================== BATCH EXECUTION ====================
@@ -1019,7 +1397,7 @@ class CommandExecution:
         timeout: Optional[float] = None,
         detach_on_no_error: bool = True,
         error_match: Optional[Callable[[str], bool]] = None,
-        parallel: bool = False
+        parallel: bool = False,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Execute multiple commands with optional parallel execution.
@@ -1031,8 +1409,8 @@ class CommandExecution:
 
         for cmd in commands:
             topic_info = self._parse_ros_topic_command(cmd)
-            if topic_info and topic_info['operation'] == 'echo' and topic_info['once']:
-                ros_topics.append(topic_info['topic_name'])
+            if topic_info and topic_info["operation"] == "echo" and topic_info["once"]:
+                ros_topics.append(topic_info["topic_name"])
             else:
                 other_commands.append(cmd)
 
@@ -1045,36 +1423,46 @@ class CommandExecution:
 
             for topic_name, topic_data in topic_results.items():
                 cmd = f"rostopic echo {topic_name} -n 1"
-                results[cmd] = [{
-                    "command": cmd,
-                    "returncode": 0 if topic_data.get('success') else 1,
-                    "stdout": f"Topic data retrieved: {topic_name}",
-                    "stderr": "" if topic_data.get('success') else topic_data.get('error', ''),
-                    "running": False,
-                    "pid": None,
-                    "note": "ros_topic_batch_read",
-                    "output_info": {
-                        'type': topic_data.get('modality', 'text'),
-                        'files': topic_data.get('files', []),
-                        'data': topic_data.get('data'),
-                        'ros_topic_data': topic_data,
-                        'topic_name': topic_name,
-                        'message_type': topic_data.get('message_type'),
-                        'has_error': not topic_data.get('success'),
+                results[cmd] = [
+                    {
+                        "command": cmd,
+                        "returncode": 0 if topic_data.get("success") else 1,
+                        "stdout": f"Topic data retrieved: {topic_name}",
+                        "stderr": ""
+                        if topic_data.get("success")
+                        else topic_data.get("error", ""),
+                        "running": False,
+                        "pid": None,
+                        "note": "ros_topic_batch_read",
+                        "output_info": {
+                            "type": topic_data.get("modality", "text"),
+                            "files": topic_data.get("files", []),
+                            "data": topic_data.get("data"),
+                            "ros_topic_data": topic_data,
+                            "topic_name": topic_name,
+                            "message_type": topic_data.get("message_type"),
+                            "has_error": not topic_data.get("success"),
+                        },
                     }
-                }]
+                ]
 
         # Execute other commands
         if other_commands:
             if parallel:
                 other_results = self._execute_commands_parallel(
-                    other_commands, wait_for_errors_seconds, timeout,
-                    detach_on_no_error, error_match
+                    other_commands,
+                    wait_for_errors_seconds,
+                    timeout,
+                    detach_on_no_error,
+                    error_match,
                 )
             else:
                 other_results = self._execute_commands_sequential(
-                    other_commands, wait_for_errors_seconds, timeout,
-                    detach_on_no_error, error_match
+                    other_commands,
+                    wait_for_errors_seconds,
+                    timeout,
+                    detach_on_no_error,
+                    error_match,
                 )
             results.update(other_results)
 
@@ -1086,7 +1474,7 @@ class CommandExecution:
         wait_for_errors_seconds: float,
         timeout: Optional[float],
         detach_on_no_error: bool,
-        error_match: Optional[Callable[[str], bool]]
+        error_match: Optional[Callable[[str], bool]],
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Sequential command execution with performance tracking."""
         execute_result = {}
@@ -1101,7 +1489,7 @@ class CommandExecution:
                     wait_for_errors_seconds=wait_for_errors_seconds,
                     timeout=timeout,
                     error_match=error_match,
-                    detach_on_no_error=detach_on_no_error
+                    detach_on_no_error=detach_on_no_error,
                 )
 
                 execute_result[command].append(result)
@@ -1110,8 +1498,8 @@ class CommandExecution:
                 if result.get("returncode", 0) != 0 and not result.get("running"):
                     logger.error(f"❌ Command failed: {command[:50]}...")
 
-                output_info = result.get('output_info', {})
-                if output_info.get('ros_topic_data'):
+                output_info = result.get("output_info", {})
+                if output_info.get("ros_topic_data"):
                     logger.info(
                         f"✓ ROS topic: {output_info.get('topic_name')} -> "
                         f"{output_info.get('type')} "
@@ -1129,7 +1517,7 @@ class CommandExecution:
         wait_for_errors_seconds: float,
         timeout: Optional[float],
         detach_on_no_error: bool,
-        error_match: Optional[Callable[[str], bool]]
+        error_match: Optional[Callable[[str], bool]],
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Parallel command execution with performance tracking.
@@ -1143,7 +1531,7 @@ class CommandExecution:
                 wait_for_errors_seconds=wait_for_errors_seconds,
                 timeout=timeout,
                 error_match=error_match,
-                detach_on_no_error=detach_on_no_error
+                detach_on_no_error=detach_on_no_error,
             )
 
         # Submit all commands
