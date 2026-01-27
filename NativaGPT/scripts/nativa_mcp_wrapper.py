@@ -22,6 +22,7 @@ class NativaMCPWrapper:
         config_path: str = "config/config_default.json",
         additional_mcp_servers: Optional[Dict[str, Dict]] = None,
         additional_json_paths: Optional[List[str]] = None,
+        max_history: int = 10,
     ):
         """
         Initialize Nativa MCP Wrapper with flexible configuration.
@@ -30,6 +31,7 @@ class NativaMCPWrapper:
             config_path: Path to config file (default: config/config_default.json)
             additional_mcp_servers: Extra MCP servers to add beyond config
             additional_json_paths: Extra function JSON paths to load beyond database_folder
+            max_history: Maximum conversation exchanges to keep (default: 10)
         """
         manager = ConfigManager(config_path)
         self.config = manager.get()
@@ -37,6 +39,9 @@ class NativaMCPWrapper:
         # Store additional servers and JSON paths
         self.additional_mcp_servers = additional_mcp_servers or {}
         self.additional_json_paths = additional_json_paths or []
+
+        # Conversation memory settings
+        self.max_history_length = max_history or 10
 
         # 1. Path to your mcp_server_generic.py
         # Defaulting to the lib/mcp directory
@@ -69,6 +74,10 @@ class NativaMCPWrapper:
         self.sessions: List[ClientSession] = []
         self._connected_server_names: Set[str] = set()
         self._is_initialized = False
+
+        # Conversation memory for context retention
+        self.conversation_history: List[Dict[str, str]] = []
+        self.max_history_length: int = 10  # Keep last 10 exchanges
 
     async def _initialize_mcp(self):
         """Initializes both static servers and dynamic generic servers."""
@@ -176,14 +185,20 @@ class NativaMCPWrapper:
             [f"- {k}: {v}" for k, v in self.hmi_status_context.items()]
         )
 
-        # Structure prompt for tool use
+        # Get conversation context for memory
+        conversation_context = self.get_conversation_context()
+
+        # Structure prompt for tool use with conversation memory
         prompt = (
             f"SYSTEM ROLE: {self.system_context}\n\n"
             f"HMI CONTEXT:\n{status_str}\n\n"
+            f"CONVERSATION HISTORY:\n{conversation_context}\n\n"
             f"AVAILABLE TOOLS:\n{json.dumps(all_tools, indent=2)}\n\n"
             "INSTRUCTIONS:\n"
-            '1. To use a tool, reply ONLY with: {"action": "call_tool", "tool": "NAME", "args": {}}\n'
-            '2. If answering the user directly, reply with: {"answer": "MESSAGE"}\n\n'
+            "1. Consider conversation context and previous interactions when responding\n"
+            '2. To use a tool, reply ONLY with: {"action": "call_tool", "tool": "NAME", "args": {}}\n'
+            '3. If answering the user directly, reply with: {"answer": "MESSAGE"}\n'
+            "4. Reference previous tool usage and responses as needed for context\n\n"
             f"USER QUERY: {query}"
         )
 
@@ -191,6 +206,9 @@ class NativaMCPWrapper:
         processed_response = await self._handle_logic(
             response.get("text_content", "{}"), query, all_tools or []
         )
+
+        # Save to conversation history
+        self.add_to_history(query, processed_response)
 
         return processed_response
 
@@ -312,6 +330,63 @@ class NativaMCPWrapper:
         """Get list of connected MCP server names."""
         return list(self._connected_server_names)
 
+    def add_to_history(self, user_query: str, response: Dict[str, Any]):
+        """Add conversation exchange to history."""
+        self.conversation_history.append(
+            {
+                "user": user_query,
+                "assistant": response.get("response", ""),
+                "tools_called": response.get("tools_called", []),
+                "timestamp": self._get_timestamp(),
+            }
+        )
+
+        # Keep only recent exchanges
+        if len(self.conversation_history) > self.max_history_length:
+            self.conversation_history = self.conversation_history[
+                -self.max_history_length :
+            ]
+
+    def get_conversation_context(self) -> str:
+        """Get formatted conversation history for prompt context."""
+        if not self.conversation_history:
+            return "No previous conversation."
+
+        context_lines = ["Recent conversation history:"]
+        for i, exchange in enumerate(self.conversation_history, 1):
+            context_lines.append(f"{i}. User: {exchange['user']}")
+            tools_called = exchange.get("tools_called", [])
+            if tools_called:
+                tools = ", ".join(
+                    [
+                        tool.get("name", "unknown")
+                        if isinstance(tool, dict)
+                        else str(tool)
+                        for tool in tools_called
+                    ]
+                )
+                context_lines.append(f"   Tools used: {tools}")
+            assistant_response = exchange.get("assistant", "")
+            context_lines.append(f"   Assistant: {assistant_response[:200]}...")
+            context_lines.append("")
+
+        return "\n".join(context_lines)
+
+    def clear_history(self):
+        """Clear conversation history."""
+        self.conversation_history = []
+        print("🗑️ Conversation history cleared.")
+
+    def get_history_length(self) -> int:
+        """Get current conversation history length."""
+        return len(self.conversation_history)
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp for history entries."""
+        from datetime import datetime
+
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     @staticmethod
     def usage_examples():
         """Show usage examples for the flexible NativaMCPWrapper."""
@@ -367,9 +442,16 @@ class NativaMCPWrapper:
            print(f"Servers: {wrapper.list_server_names()}")
            print(f"Tools loaded: {wrapper.get_loaded_tools_count()}")
 
-        7. Clean Shutdown:
-           wrapper = NativaMCPWrapper()
-           # ... use wrapper ...
-           wrapper.shutdown()  # Clean disconnection
+        7. Conversation Memory:
+           wrapper = NativaMCPWrapper(max_history=10)  # Keep 10 exchanges
+           
+           # Multi-turn conversation with context
+           result1 = wrapper.ask("Hi, I'm working on robotics project")
+           result2 = wrapper.ask("What tools can help with my project?")  # Remembers context
+           
+           # History management
+           print(f"History length: {wrapper.get_history_length()}")
+           print(wrapper.get_history_summary())  # Show recent exchanges
+           wrapper.clear_history()  # Clear when needed
         """
         print(examples)
