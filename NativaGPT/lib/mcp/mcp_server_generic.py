@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from NativaGPT.lib.coloring_logger import logger
+# Disable logging to prevent stdout interference with MCP JSON protocol
+# from NativaGPT.lib.coloring_logger import logger
 
 
 def get_server_name(config_path: str) -> str:
@@ -30,7 +31,8 @@ def load_functions(config_path: str) -> list[dict]:
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception as e:
-        logger.error(f"Error loading {config_path}: {e}")
+        # logger.error(f"Error loading {config_path}: {e}")
+        print(f"Error loading {config_path}: {e}", file=sys.stderr)
         return []
 
 
@@ -148,10 +150,15 @@ def create_server(config_path: str) -> FastMCP:
     functions = load_functions(config_path)
 
     if not functions:
-        logger.warning(f"No functions in {config_path}")
+        # logger.warning(f"No functions in {config_path}")
+        print(f"No functions in {config_path}", file=sys.stderr)
         return mcp
 
-    logger.info(f"Creating server '{server_name}' with {len(functions)} functions")
+    # logger.info(f"Creating server '{server_name}' with {len(functions)} functions")
+    print(
+        f"Creating server '{server_name}' with {len(functions)} functions",
+        file=sys.stderr,
+    )
 
     for func_def in functions:
         func_info = func_def.get("function", func_def)
@@ -176,10 +183,12 @@ def create_server(config_path: str) -> FastMCP:
                 tool_func
             )
 
-            logger.info(f"  ✓ {name}")
+            # logger.info(f"  ✓ {name}")
+            print(f"  ✓ {name}", file=sys.stderr)
 
         except Exception as e:
-            logger.error(f"  ✗ {name}: {e}")
+            # logger.error(f"  ✗ {name}: {e}")
+            print(f"  ✗ {name}: {e}", file=sys.stderr)
 
     return mcp
 
@@ -208,7 +217,7 @@ def main():
 
     mcp = create_server(config_path)
 
-    print(f"\nStarting server: {get_server_name(config_path)}")
+    print(f"\nStarting server: {get_server_name(config_path)}", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

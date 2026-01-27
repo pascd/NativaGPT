@@ -36,7 +36,7 @@
         "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
       },
       "ros1_mcp": {
-        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros1.py"
+        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros.py"
       }
     }
   },

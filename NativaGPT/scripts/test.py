@@ -2,7 +2,7 @@ from NativaGPT.scripts.nativa_mcp_wrapper import NativaMCPWrapper
 
 def main():
 
-  wrapper = NativaMCPWrapper(system_context="You are an industrial HMI assistant. Be brief.", config_path="/home/pedro/Documents/uv-projects/NativaGPT/config/config_default.json")
+  wrapper = NativaMCPWrapper(config_path="/home/pedro/Documents/uv-projects/NativaGPT/config/config_default.json")
 
   while True:
 
