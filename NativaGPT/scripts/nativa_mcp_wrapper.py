@@ -23,6 +23,7 @@ class NativaMCPWrapper:
         additional_mcp_servers: Optional[Dict[str, Dict]] = None,
         additional_json_paths: Optional[List[str]] = None,
         max_history: int = 10,
+        auto_initialize: bool = True,
     ):
         """
         Initialize Nativa MCP Wrapper with flexible configuration.
@@ -32,6 +33,7 @@ class NativaMCPWrapper:
             additional_mcp_servers: Extra MCP servers to add beyond config
             additional_json_paths: Extra function JSON paths to load beyond database_folder
             max_history: Maximum conversation exchanges to keep (default: 10)
+            auto_initialize: Automatically initialize MCP servers on startup (default: True)
         """
         manager = ConfigManager(config_path)
         self.config = manager.get()
@@ -77,12 +79,46 @@ class NativaMCPWrapper:
 
         # Conversation memory for context retention
         self.conversation_history: List[Dict[str, str]] = []
-        self.max_history_length: int = 10  # Keep last 10 exchanges
+
+        # Auto-initialize MCP servers
+        if auto_initialize and self.mcp_enabled:
+            print("[NativaMCP] Auto-initializing MCP servers...", file=sys.stderr)
+            self._initialize_sync()
+            print(
+                f"[NativaMCP] ✓ Initialized {len(self.sessions)} MCP servers",
+                file=sys.stderr,
+            )
+
+    def _initialize_sync(self):
+        """Synchronously initialize MCP servers during __init__."""
+        try:
+            # Get or create event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            # Run initialization
+            loop.run_until_complete(self._initialize_mcp())
+
+        except Exception as e:
+            print(
+                f"[NativaMCP] Error during auto-initialization: {e}", file=sys.stderr
+            )
+            import traceback
+
+            traceback.print_exc()
 
     async def _initialize_mcp(self):
         """Initializes both static servers and dynamic generic servers."""
         if self._is_initialized or not self.mcp_enabled:
             return
+
+        print("[NativaMCP] Loading MCP servers...", file=sys.stderr)
 
         # 1. Load Static Servers (including additional ones)
         for name, data in self.server_configs.items():
@@ -95,6 +131,10 @@ class NativaMCPWrapper:
         if os.path.exists(self.functions_dir):
             json_files = glob.glob(os.path.join(self.functions_dir, "*_functions.json"))
             all_json_files.extend(json_files)
+            print(
+                f"[NativaMCP] Found {len(json_files)} function files in database_folder",
+                file=sys.stderr,
+            )
 
         # 2b. From additional JSON paths
         for json_path in self.additional_json_paths:
@@ -104,6 +144,10 @@ class NativaMCPWrapper:
                 # If it's a directory, look for *_functions.json files
                 dir_json_files = glob.glob(os.path.join(json_path, "*_functions.json"))
                 all_json_files.extend(dir_json_files)
+                print(
+                    f"[NativaMCP] Found {len(dir_json_files)} function files in {json_path}",
+                    file=sys.stderr,
+                )
 
         # 3. Spawn Generic Servers for all JSON files
         for json_path in all_json_files:
@@ -116,6 +160,10 @@ class NativaMCPWrapper:
             await self._connect_to_server(server_name, generic_config)
 
         self._is_initialized = True
+        print(
+            f"[NativaMCP] Initialization complete - {len(self._connected_server_names)} servers active",
+            file=sys.stderr,
+        )
 
     async def _connect_to_server(self, name: str, server_data: Dict):
         """Helper to establish a connection to any MCP server."""
@@ -149,9 +197,9 @@ class NativaMCPWrapper:
 
             self.sessions.append(session)
             self._connected_server_names.add(name)
-            print(f"[MCP] Successfully started server: {name}")
+            print(f"[MCP] ✓ Started server: {name}", file=sys.stderr)
         except Exception as e:
-            print(f"[MCP Error] Failed to start {name}: {e}")
+            print(f"[MCP] ✗ Failed to start {name}: {e}", file=sys.stderr)
 
     def ask(self, query: str) -> Dict[str, Any]:
         """Entry point for HMI calls. Returns both tools and response."""
@@ -174,7 +222,7 @@ class NativaMCPWrapper:
                     {
                         "name": t.name,
                         "desc": t.description,
-                        "input_schema": t.inputSchema,  # Added for better tool call precision
+                        "input_schema": t.inputSchema,
                     }
                 )
 
@@ -267,8 +315,6 @@ class NativaMCPWrapper:
         for session in self.sessions:
             tools = await session.list_tools()
             if any(t.name == tool_name for t in tools.tools):
-                # Your generic server expects arguments in a specific way
-                # We pass the args dict directly
                 result = await session.call_tool(tool_name, args)
                 if hasattr(result, "content"):
                     return str(result.content)
@@ -303,7 +349,6 @@ class NativaMCPWrapper:
             })
         """
         self.additional_mcp_servers[name] = server_config
-        # Also update the merged config for immediate use
         self.server_configs[name] = server_config
 
     def add_function_json(self, json_path: str):
@@ -375,7 +420,7 @@ class NativaMCPWrapper:
     def clear_history(self):
         """Clear conversation history."""
         self.conversation_history = []
-        print("🗑️ Conversation history cleared.")
+        print("🗑️ Conversation history cleared.", file=sys.stderr)
 
     def get_history_length(self) -> int:
         """Get current conversation history length."""
@@ -416,7 +461,7 @@ class NativaMCPWrapper:
            wrapper = NativaMCPWrapper(
                additional_json_paths=[
                    "/path/to/custom_functions.json",
-                   "/path/to/more_functions/"  # Directory
+                   "/path/to/more_functions/"
                ]
            )
 
@@ -437,21 +482,17 @@ class NativaMCPWrapper:
            wrapper = NativaMCPWrapper()
            wrapper.add_mcp_server("weather", {...})
            wrapper.add_function_json("/path/to/tools.json")
-           
-           # Check status
+
            print(f"Servers: {wrapper.list_server_names()}")
            print(f"Tools loaded: {wrapper.get_loaded_tools_count()}")
 
         7. Conversation Memory:
-           wrapper = NativaMCPWrapper(max_history=10)  # Keep 10 exchanges
-           
-           # Multi-turn conversation with context
+           wrapper = NativaMCPWrapper(max_history=10)
+
            result1 = wrapper.ask("Hi, I'm working on robotics project")
-           result2 = wrapper.ask("What tools can help with my project?")  # Remembers context
-           
-           # History management
+           result2 = wrapper.ask("What tools can help with my project?")
+
            print(f"History length: {wrapper.get_history_length()}")
-           print(wrapper.get_history_summary())  # Show recent exchanges
-           wrapper.clear_history()  # Clear when needed
+           wrapper.clear_history()
         """
-        print(examples)
+        print(examples, file=sys.stderr)

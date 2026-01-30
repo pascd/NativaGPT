@@ -55,8 +55,8 @@
   },
   {
     "function": {
-      "name": "Check disk I/O usage",
-      "description": "Function to monitor disk I/O operations.",
+      "name": "Check disk usage",
+      "description": "Function to monitor disk operations.",
       "execution": "shell",
       "command": "iostat",
       "location": ""

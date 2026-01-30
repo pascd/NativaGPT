@@ -378,11 +378,12 @@ if __name__ == "__main__":
 
 
 def main():
-    logger.info(f"ROS UNIFIED MCP SERVER")
+    print(f"ROS UNIFIED MCP SERVER", file=sys.stderr)
     if ROS_DISTRO:
-        logger.info(f"Detected: ROS {ROS_VERSION} ({ROS_DISTRO}) at {ROS_SETUP_PATH}")
+        print(f"Detected: ROS {ROS_VERSION} ({ROS_DISTRO}) at {ROS_SETUP_PATH}", file=sys.stderr)
     else:
-        logger.info(f"No ROS installation detected in /opt/ros/")
+        print(f"No ROS installation detected in /opt/ros/", file=sys.stderr)
+
     mcp.run(transport="stdio")
 
 

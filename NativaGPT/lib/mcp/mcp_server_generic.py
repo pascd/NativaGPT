@@ -141,6 +141,15 @@ def create_tool_function(
 
     return tool_impl
 
+def sanitize_tool_name(name: str) -> str:
+    """Sanitize tool name to conform to MCP standard."""
+    # Replace invalid characters with underscore
+    sanitized = re.sub(r'[^A-Za-z0-9_\-\.]', '_', name)
+    # Remove multiple consecutive underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    return sanitized.lower()
 
 def create_server(config_path: str) -> FastMCP:
     """Create MCP server from JSON config."""
@@ -174,20 +183,24 @@ def create_server(config_path: str) -> FastMCP:
                 name, description, command, execution, location, arg_names
             )
 
-            # Sanitize tool name for MCP
-            tool_name = name.lower().replace(" ", "_").replace("-", "_")
+            # ✅ Sanitize tool name
+            tool_name = sanitize_tool_name(name)
+
+            # Avisa se o nome foi alterado
+            if tool_name != name.lower().replace(" ", "_"):
+                print(
+                    f"⚠️  Tool name sanitized: '{name}' → '{tool_name}'",
+                    file=sys.stderr
+                )
 
             # Create tool using FastMCP's tool decorator properly
-            # The function name must match what we want the tool to be called
             decorated_tool = mcp.tool(name=tool_name, description=description)(
                 tool_func
             )
 
-            # logger.info(f"  ✓ {name}")
             print(f"  ✓ {name}", file=sys.stderr)
 
         except Exception as e:
-            # logger.error(f"  ✗ {name}: {e}")
             print(f"  ✗ {name}: {e}", file=sys.stderr)
 
     return mcp
