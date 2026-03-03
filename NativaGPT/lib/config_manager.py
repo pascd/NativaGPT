@@ -24,7 +24,9 @@ class ConfigManager:
         self.config_json: Optional[Dict[str, Any]] = None
         self._tools_cache: Optional[List[Dict[str, Any]]] = None
         self._lock = threading.RLock()  # Reentrant lock
-        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="config_mgr")
+        self.executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="config_mgr"
+        )
 
         # Load config on initialization
         self.config_json = self._load_config()
@@ -36,7 +38,7 @@ class ConfigManager:
             if isinstance(self.config_path, dict):
                 return self.config_path
             # Otherwise
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+            with open(self.config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
             return config
         except FileNotFoundError:
@@ -84,7 +86,11 @@ class ConfigManager:
 
     def _load_tools_from_database(self) -> List[Dict[str, Any]]:
         """Internal method to load tools from database folder."""
-        database_folder = self.config_json.get("nativa_gpt", {}).get("database_folder", "")
+        if self.config_json is None:
+            return []
+        database_folder = self.config_json.get("nativa_gpt", {}).get(
+            "database_folder", ""
+        )
 
         if not database_folder:
             print("WARNING: No database_folder configured")
@@ -119,6 +125,7 @@ class ConfigManager:
         except Exception as e:
             print(f"ERROR loading tools from database: {e}")
             import traceback
+
             traceback.print_exc()
             return []
 
@@ -150,7 +157,9 @@ class ConfigManager:
         """Load JSON files in parallel for better performance."""
         tools = []
 
-        futures = [self.executor.submit(self._load_single_json_file, f) for f in json_files]
+        futures = [
+            self.executor.submit(self._load_single_json_file, f) for f in json_files
+        ]
 
         for future in as_completed(futures):
             try:
@@ -167,7 +176,7 @@ class ConfigManager:
         Handles both single objects and arrays.
         """
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             # Add metadata
@@ -177,22 +186,24 @@ class ConfigManager:
             if isinstance(self.config_path, dict):
                 rel_path = filepath  # Just use full path if config is a dict
             else:
-                rel_path = os.path.relpath(filepath, start=os.path.dirname(self.config_path))
+                rel_path = os.path.relpath(
+                    filepath, start=os.path.dirname(self.config_path)
+                )
 
             # Handle array of tools
             if isinstance(data, list):
                 tools = []
                 for item in data:
                     if isinstance(item, dict):
-                        item['_source_file'] = source_file
-                        item['_source_path'] = rel_path
+                        item["_source_file"] = source_file
+                        item["_source_path"] = rel_path
                         tools.append(item)
                 return tools
 
             # Handle single tool object
             elif isinstance(data, dict):
-                data['_source_file'] = source_file
-                data['_source_path'] = rel_path
+                data["_source_file"] = source_file
+                data["_source_path"] = rel_path
                 return [data]
 
             else:
@@ -210,11 +221,11 @@ class ConfigManager:
         """
         Validate that a tool object has the minimum required fields.
         """
-        required_fields = ['name', 'command']
+        required_fields = ["name", "command"]
 
         for field in required_fields:
             if field not in tool:
-                source = tool.get('_source_file', 'unknown')
+                source = tool.get("_source_file", "unknown")
                 print(f"WARNING: Tool missing required field '{field}' in {source}")
                 return False
 
@@ -226,17 +237,17 @@ class ConfigManager:
         Ensures all tools have consistent structure.
         """
         normalized = {
-            'name': tool.get('name', 'unnamed_tool'),
-            'command': tool.get('command', ''),
-            'description': tool.get('description', tool.get('desc', 'No description')),
-            'execution': tool.get('execution', 'shell'),
-            'location': tool.get('location', ''),
-            'parameters': tool.get('parameters', tool.get('params', {})),
-            'examples': tool.get('examples', []),
-            'category': tool.get('category', 'Custom Tools'),
-            'tags': tool.get('tags', []),
-            '_source_file': tool.get('_source_file', 'unknown'),
-            '_source_path': tool.get('_source_path', 'unknown')
+            "name": tool.get("name", "unnamed_tool"),
+            "command": tool.get("command", ""),
+            "description": tool.get("description", tool.get("desc", "No description")),
+            "execution": tool.get("execution", "shell"),
+            "location": tool.get("location", ""),
+            "parameters": tool.get("parameters", tool.get("params", {})),
+            "examples": tool.get("examples", []),
+            "category": tool.get("category", "Custom Tools"),
+            "tags": tool.get("tags", []),
+            "_source_file": tool.get("_source_file", "unknown"),
+            "_source_path": tool.get("_source_path", "unknown"),
         }
 
         return normalized
@@ -269,7 +280,7 @@ class ConfigManager:
 
         categorized = {}
         for tool in tools:
-            category = tool.get('category', 'Uncategorized')
+            category = tool.get("category", "Uncategorized")
             if category not in categorized:
                 categorized[category] = []
             categorized[category].append(tool)
@@ -284,7 +295,7 @@ class ConfigManager:
         tools = self.get_validated_tools()
 
         for tool in tools:
-            if tool.get('name') == name:
+            if tool.get("name") == name:
                 return tool
 
         return None
@@ -300,17 +311,17 @@ class ConfigManager:
         matching_tools = []
         for tool in tools:
             # Check name
-            if query_lower in tool.get('name', '').lower():
+            if query_lower in tool.get("name", "").lower():
                 matching_tools.append(tool)
                 continue
 
             # Check description
-            if query_lower in tool.get('description', '').lower():
+            if query_lower in tool.get("description", "").lower():
                 matching_tools.append(tool)
                 continue
 
             # Check tags
-            tags = tool.get('tags', [])
+            tags = tool.get("tags", [])
             if any(query_lower in tag.lower() for tag in tags):
                 matching_tools.append(tool)
                 continue

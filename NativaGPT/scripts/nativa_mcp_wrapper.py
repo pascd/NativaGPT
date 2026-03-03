@@ -17,6 +17,23 @@ from NativaGPT.lib.config_manager import ConfigManager
 
 
 class NativaMCPWrapper:
+    """
+    Usage Examples - Single Model for Text + Images:
+    =================================================
+
+    # Config (same model handles both):
+    # {
+    #     "llm_config": {
+    #         "backend": "ollama",
+    #         "model": "llama3.2",           # or moondream, minivlm, gpt-4o
+    #         "ollama_endpoint": "http://localhost:11434"
+    #     }
+    # }
+
+    # Ollama (local): backend="ollama", model="llama3.2" or "moondream:latest"
+    # API (cloud): backend="api", endpoint="https://api.example.com/v1/chat", model="gpt-4o"
+    """
+
     def __init__(
         self,
         config_path: str = "config/config_default.json",
@@ -106,9 +123,7 @@ class NativaMCPWrapper:
             loop.run_until_complete(self._initialize_mcp())
 
         except Exception as e:
-            print(
-                f"[NativaMCP] Error during auto-initialization: {e}", file=sys.stderr
-            )
+            print(f"[NativaMCP] Error during auto-initialization: {e}", file=sys.stderr)
             import traceback
 
             traceback.print_exc()
@@ -432,6 +447,84 @@ class NativaMCPWrapper:
 
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def send_image_to_vlm(
+        self, image_path: str, prompt: str = "Describe what you see in this image."
+    ) -> Dict[str, Any]:
+        """
+        Simplified VLM image analysis - works with both ROS captured images and file paths.
+
+        Args:
+            image_path: Path to image file (from ROS capture or local file)
+            prompt: Question about the image (default: description)
+
+        Returns:
+            Dict with 'response' containing VLM analysis
+
+        Examples:
+            # ROS image capture + VLM analysis
+            capture_result = wrapper.ask("Capture an image from /camera/color/image_raw")
+            if "image_path" in str(capture_result):
+                import json
+                data = json.loads(str(capture_result))
+                vlm_result = wrapper.send_image_to_vlm(data["image_path"], "What's in this scene?")
+
+            # Direct local image
+            result = wrapper.send_image_to_vlm("/path/to/image.jpg", "Count the objects")
+        """
+        return self.llm_handler.send_to_vlm(image_path, prompt)
+
+    def send_images_to_llm(self, images: List[str], prompt: str) -> Dict[str, Any]:
+        """
+        Send multiple images to LLM with a prompt (Ollama or API backend).
+
+        Args:
+            images: List of image paths
+            prompt: Question or instruction about the images
+
+        Returns:
+            Dict with 'text_content', 'json_strings', 'success'
+
+        Example:
+            result = wrapper.send_images_to_llm(
+                ["/path/img1.jpg", "/path/img2.jpg"],
+                "Compare these two images and describe differences"
+            )
+        """
+        return self.llm_handler.send_to_llm(prompt, images=images)
+
+    def capture_and_analyze(
+        self,
+        topic_name: str = "/camera/color/image_raw",
+        prompt: str = "Describe this image in detail.",
+    ) -> Dict[str, Any]:
+        """
+        One-shot: Capture image from ROS topic and analyze with VLM.
+
+        Args:
+            topic_name: ROS topic to capture image from
+            prompt: VLM prompt about the captured image
+
+        Returns:
+            Dict with 'response' containing VLM analysis
+
+        Example:
+            result = wrapper.capture_and_analyze(
+                topic_name="/camera/color/image_raw",
+                prompt="What objects are detected and where are they located?"
+            )
+        """
+        capture_result = self.ask(f"Capture an image from {topic_name}")
+        try:
+            if isinstance(capture_result, dict) and "raw_result" in capture_result:
+                raw = capture_result["raw_result"]
+                if isinstance(raw, str):
+                    data = json.loads(raw)
+                    if "image_path" in data:
+                        return self.send_image_to_vlm(data["image_path"], prompt)
+        except Exception as e:
+            return {"error": f"Failed to capture and analyze: {e}", "success": False}
+        return {"error": "No image captured", "success": False}
+
     @staticmethod
     def usage_examples():
         """Show usage examples for the flexible NativaMCPWrapper."""
@@ -494,5 +587,67 @@ class NativaMCPWrapper:
 
            print(f"History length: {wrapper.get_history_length()}")
            wrapper.clear_history()
+
+        === OLLAMA VLM (Vision Language Model) EXAMPLES ===
+
+        Prerequisites:
+        - Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+        - Pull a lightweight VLM (single model for text + images):
+            ollama pull llama3.2         # ~2GB, supports images (recommended)
+            ollama pull moondream:latest # ~1.5GB, lightweight vision
+            ollama pull minivlm:latest   # ~2GB, compact
+
+        Config File (config/config_default.json):
+        {
+            "llm_config": {
+                "backend": "ollama",
+                "ollama_endpoint": "http://localhost:11434",
+                "model": "llama3.2",              # SAME model for text + images
+                "temperature": 0.1,
+                "max_tokens": 2000
+            }
+        }
+
+        8. Capture ROS Image and Analyze with VLM:
+           wrapper = NativaMCPWrapper()
+           # Option A: One-shot capture + analyze
+           result = wrapper.capture_and_analyze(
+               topic_name="/camera/color/image_raw",
+               prompt="Describe what you see in this scene"
+           )
+           print(result.get("text_content", ""))
+
+           # Option B: Manual steps
+           capture_result = wrapper.ask("Capture an image from /camera/color/image_raw")
+           vlm_result = wrapper.send_image_to_vlm("/tmp/...jpg", "What objects are visible?")
+
+        9. Multiple Image Comparison:
+           wrapper = NativaMCPWrapper()
+           result = wrapper.send_images_to_llm(
+               images=["/path/image1.jpg", "/path/image2.jpg"],
+               prompt="Compare these two images and describe differences"
+           )
+
+        10. Direct VLM with local image:
+           wrapper = NativaMCPWrapper()
+           result = wrapper.send_image_to_vlm(
+               "/home/user/test_image.jpg",
+               prompt="Count the number of red objects in this image"
+           )
+
+        === API BACKEND EXAMPLE ===
+
+        For cloud API (e.g., OpenAI, Anthropic, custom endpoint):
+        {
+            "llm_config": {
+                "backend": "api",
+                "endpoint": "https://api.openai.com/v1/chat/completions",
+                "api_key": "your-api-key",
+                "model": "gpt-4o"                # SAME model for text + images
+            }
+        }
+
+        wrapper = NativaMCPWrapper()
+        result = wrapper.send_image_to_vlm("/path/image.jpg", "Analyze this image")
         """
         print(examples, file=sys.stderr)

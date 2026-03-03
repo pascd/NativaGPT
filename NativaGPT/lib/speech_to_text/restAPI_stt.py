@@ -20,7 +20,9 @@ cors = CORS(app, resources={r"/*": {"origins": "*"}})
 api = Api(app)
 
 # Get the project root directory (assuming your config is relative to project root)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+)
 
 # Create the config path relative to project root
 config_path = os.path.join(PROJECT_ROOT, "config", "config_default.json")
@@ -33,13 +35,15 @@ config = config_manager.get()
 if isinstance(config, list):
     config = config[0]
 
-MODEL_ID = config["stt_config"]["rest_api"]["model_id"]
-TARGET_SAMPLE_RATE = config["stt_config"]["rest_api"]["target_sample_rate"]
+stt_config = config.get("stt_config", {}).get("rest_api", {})
+MODEL_ID = stt_config.get("model_id", "openai/whisper-base")
+TARGET_SAMPLE_RATE = stt_config.get("target_sample_rate", 16000)
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 TORCH_DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
 
 # Global variable for the model pipeline
 pipe = None
+
 
 def load_model():
     """Loads the ASR model with optimized settings."""
@@ -47,7 +51,10 @@ def load_model():
     if pipe is None:
         logger.info(f"Loading model: {MODEL_ID} on {DEVICE}")
         model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            MODEL_ID, torch_dtype=TORCH_DTYPE, low_cpu_mem_usage=True, use_safetensors=True
+            MODEL_ID,
+            torch_dtype=TORCH_DTYPE,
+            low_cpu_mem_usage=True,
+            use_safetensors=True,
         )
         model.to(DEVICE)
         processor = AutoProcessor.from_pretrained(MODEL_ID)
@@ -62,6 +69,7 @@ def load_model():
         logger.info("Model loaded successfully.")
     return pipe
 
+
 class Test(Resource):
     def get(self):
         return {"message": "API working."}, 200
@@ -70,10 +78,11 @@ class Test(Resource):
         try:
             value = request.get_json()
             if value.get("text"):
-                return {'Post Values': value}, 201
+                return {"Post Values": value}, 201
             return {"error": "Invalid Request"}, 400
         except Exception as error:
             return {"error": str(error)}, 400
+
 
 class STTService(Resource):
     def get(self):
@@ -82,10 +91,10 @@ class STTService(Resource):
     def post(self):
         try:
             # Check if file is in request
-            if 'audio' not in request.files:
+            if "audio" not in request.files:
                 return {"error": "No audio file provided"}, 400
 
-            audio_file = request.files['audio']
+            audio_file = request.files["audio"]
 
             # Read audio file
             audio_data, sample_rate = sf.read(audio_file)
@@ -103,26 +112,20 @@ class STTService(Resource):
             audio_data = audio_data / np.max(np.abs(audio_data))
 
             # Prepare input for the model
-            audio_input = {
-                "array": audio_data,
-                "sampling_rate": TARGET_SAMPLE_RATE
-            }
+            audio_input = {"array": audio_data, "sampling_rate": TARGET_SAMPLE_RATE}
 
             # Load model if not loaded
             pipe = load_model()
 
             # Transcribe
             with torch.no_grad():
-                result = pipe(
-                    audio_input,
-                    return_timestamps=True
-                )
+                result = pipe(audio_input, return_timestamps=True)
 
             transcribed_text = result["text"].strip()
 
             return {
                 "transcription": transcribed_text,
-                #"timestamps": result.get("chunks", [])
+                # "timestamps": result.get("chunks", [])
             }, 200
 
         except Exception as error:
@@ -145,11 +148,12 @@ class STTService(Resource):
         except Exception as e:
             raise ValueError(f"Error processing audio data: {str(e)}")
 
-# Add resources to API
-api.add_resource(Test, '/')
-api.add_resource(STTService, '/transcribe')
 
-if __name__ == '__main__':
+# Add resources to API
+api.add_resource(Test, "/")
+api.add_resource(STTService, "/transcribe")
+
+if __name__ == "__main__":
     # Load model at startup
     load_model()
 
@@ -157,4 +161,4 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8030))
 
     # Run the application
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)

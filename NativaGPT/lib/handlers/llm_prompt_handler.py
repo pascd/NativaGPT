@@ -1,33 +1,72 @@
+"""
+LLM Prompt Handler v4.2 - Unified Single VLM Model
+
+Features:
+- Single VLM model handles text and images
+- Auto-downloads model if not available (Ollama)
+- Works with modern VLMs: llama3.2, moondream, minivlm, gpt-4o, etc.
+- Unified interface for Ollama local models and external API
+
+Usage Examples:
+===============
+
+# Single VLM model config:
+# {
+#     "llm_config": {
+#         "backend": "ollama",
+#         "ollama_endpoint": "http://localhost:11434",
+#         "model": "llama3.2",
+#         "temperature": 0.1,
+#         "max_tokens": 2000
+#     }
+# }
+
+# API backend:
+# {
+#     "llm_config": {
+#         "backend": "api",
+#         "endpoint": "https://api.openai.com/v1/chat/completions",
+#         "api_key": "your-key",
+#         "model": "gpt-4o"
+#     }
+# }
+
+# Code usage:
+handler = LLMPromptHandler(config)
+
+# Text only
+result = handler.send_to_llm("Hello!")
+
+# With images - same method
+result = handler.send_to_llm("Describe this", images=["/path/image.jpg"])
+"""
+
 import base64
 import json
 import os
 import time
 import requests
 import re
-from io import StringIO, BytesIO
+from requests.adapters import HTTPAdapter
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
 from NativaGPT.lib.coloring_logger import logger
-from datetime import datetime
-import uuid
-
-from NativaGPT.lib.config_manager import ConfigManager
 
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY")
-
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
+API_KEY = os.getenv("API_KEY", "")
 
 
 class LLMPromptHandler:
     """
-    LLM Prompt Handler v3.4 - SYSTEM PROMPT OVERRIDE SUPPORT
+    LLM Prompt Handler v4.0 - Unified Ollama/API Backend
+
+    Supports:
+    - Ollama local models (text and vision)
+    - External LLM APIs with image support
+    - Automatic image encoding and optimization
     """
 
     _THINKING_PATTERNS = [
@@ -39,68 +78,338 @@ class LLMPromptHandler:
     ]
     _JSON_PATTERN = re.compile(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})")
     _NEWLINE_PATTERN = re.compile(r"\n\s*\n\s*\n")
-    _WHITESPACE_PATTERN = re.compile(r"^\s+|\s+$")
-    _COMMENT_PATTERN = re.compile(r"//.*|/\*.*?\*/", re.DOTALL)
-    _TRAILING_COMMA_PATTERN = re.compile(r",\s*([}\]])")
-    _SINGLE_QUOTE_PATTERN = re.compile(r"'([^']*)'")
 
     MAX_IMAGE_SIZE_MB = 10
-    WARN_IMAGE_SIZE_KB = 500
+    MAX_IMAGE_DIMENSION = 1024
+    JPEG_QUALITY = 75
 
     __slots__ = (
         "config",
+        "backend",
         "endpoint",
+        "api_key",
         "model",
-        "vision_model",
         "temperature",
         "max_tokens",
-        "channel_id",
-        "thread_id",
-        "image_dir",
-        "generated_images_dir",
-        "setup_prompt",
+        "system_prompt",
         "session",
         "executor",
-        "config_manager",
-        "_enhanced_prompt_cache",
+        "image_dir",
     )
 
     def __init__(self, config):
         self.config = config
         llm_config = config.get("llm_config", {})
 
-        self.endpoint = llm_config.get("endpoint", "")
-        self.vision_model = llm_config.get("vision_model", "llava:latest")
+        self.backend = llm_config.get("backend", "ollama")
+
+        if self.backend == "ollama":
+            self.endpoint = llm_config.get("ollama_endpoint", "http://localhost:11434")
+        else:
+            self.endpoint = llm_config.get("endpoint", "")
+
+        self.api_key = llm_config.get("api_key", API_KEY)
+        self.model = llm_config.get("model", "llama3.2")
         self.temperature = llm_config.get("temperature", 0.1)
         self.max_tokens = llm_config.get("max_tokens", 2000)
-        self.channel_id = llm_config.get("channel_id", "")
-
-        self.thread_id = llm_config.get("thread_id", "")
-        if not self.thread_id:
-            self.thread_id = str(uuid.uuid4())
+        self.system_prompt = llm_config.get("model_config", {}).get("setup_prompt", "")
 
         self.image_dir = "/tmp/nativa_vlm_images"
-        self.generated_images_dir = "/tmp/nativa_generated_images"
         os.makedirs(self.image_dir, exist_ok=True)
-        os.makedirs(self.generated_images_dir, exist_ok=True)
-
-        self.setup_prompt = llm_config.get("model_config", {}).get("setup_prompt", "")
 
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
+        adapter = HTTPAdapter(
             pool_connections=10, pool_maxsize=20, max_retries=3, pool_block=False
         )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
         self.executor = ThreadPoolExecutor(max_workers=4)
-        self.config_manager = ConfigManager(config)
-        self._enhanced_prompt_cache = {}
 
-        logger.info(f"LLM Handler was initialized. Endpoint: {self.endpoint}")
+        logger.info(f"LLM Handler v4.2 initialized")
+        logger.info(f"Backend: {self.backend}")
+        logger.info(f"Endpoint: {self.endpoint}")
+        logger.info(f"Model: {self.model} (handles text + images)")
 
-    def _handle_ndjson_responses(self, response) -> Dict:
-        """Parses NDJSON stream."""
+        if self.backend == "ollama":
+            self._ensure_ollama_model()
+
+    def send_to_llm(
+        self,
+        prompt: str,
+        images: Optional[List[str]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """
+        Send request to LLM backend.
+
+        Args:
+            prompt: The user prompt
+            images: List of image paths or base64 strings
+            system_prompt: Override system prompt (None = use default)
+
+        Returns:
+            Dict with 'text_content', 'json_strings', 'success', and optionally 'raw_response'
+        """
+        if self.backend == "ollama":
+            return self._send_to_ollama(prompt, images, system_prompt)
+        else:
+            return self._send_to_api(prompt, images, system_prompt)
+
+    def send_to_vlm(
+        self,
+        image_path: str,
+        prompt: str = "Describe this image in detail.",
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """
+        Send image to Vision Language Model for analysis.
+
+        Args:
+            image_path: Path to image file (from ROS capture, camera, or local file)
+            prompt: Question/instruction about the image
+            system_prompt: Optional system prompt override
+
+        Returns:
+            Dict with 'text_content', 'success'
+
+        Example:
+            result = handler.send_to_vlm("/tmp/captured_image.jpg", "What's in this scene?")
+        """
+        logger.info(f"[VLM] Analyzing image: {image_path}")
+
+        if self.backend == "ollama":
+            return self._send_to_ollama_vlm(image_path, prompt, system_prompt)
+        else:
+            return self._send_to_api_vlm(image_path, prompt, system_prompt)
+
+    def send_images_to_llm(
+        self,
+        images: List[str],
+        prompt: str,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """
+        Simplified multi-image sending to LLM/VLM.
+
+        Args:
+            images: List of image paths (from ROS, camera, or files)
+            prompt: Question/instruction about the images
+            system_prompt: Optional system prompt override
+
+        Returns:
+            Dict with 'text_content', 'json_strings', 'success'
+
+        Example:
+            result = handler.send_images_to_llm(
+                ["/path/img1.jpg", "/path/img2.jpg"],
+                "Compare these images and describe differences"
+            )
+        """
+        return self.send_to_llm(prompt, images=images, system_prompt=system_prompt)
+
+    def _send_to_ollama(
+        self,
+        prompt: str,
+        images: Optional[List[str]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """Send request to Ollama API - same model handles text + images."""
+        request_start = time.time()
+
+        try:
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": self.temperature,
+                    "num_predict": self.max_tokens,
+                },
+            }
+
+            if system_prompt is not None:
+                payload["system"] = system_prompt
+            elif self.system_prompt:
+                payload["system"] = self.system_prompt
+
+            if images:
+                base64_images = self._prepare_images_base64(images)
+                if base64_images:
+                    payload["images"] = base64_images
+                    logger.info(
+                        f"[Ollama] Sending {len(base64_images)} images with model {self.model}"
+                    )
+
+            response = self.session.post(
+                f"{self.endpoint}/api/generate",
+                json=payload,
+                timeout=180,
+            )
+
+            response.raise_for_status()
+            response_data = response.json()
+
+            result = self._handle_ollama_response(response_data)
+            request_time = (time.time() - request_start) * 1000
+            logger.info(f"[Ollama] Request completed in {request_time:.1f}ms")
+
+            return self.process_llm_response(result, images)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[Ollama] Request failed: {e}")
+            return {"error": f"Ollama request failed: {str(e)}", "success": False}
+        except Exception as e:
+            logger.error(f"[Ollama] Unexpected error: {e}")
+            return {"error": f"Unexpected error: {str(e)}", "success": False}
+
+    def _ensure_ollama_model(self):
+        """Check if model exists in Ollama, pull if missing."""
+        try:
+            response = self.session.get(f"{self.endpoint}/api/tags", timeout=10)
+            response.raise_for_status()
+            tags = response.json()
+            model_names = [m["name"] for m in tags.get("models", [])]
+
+            model_short = self.model.split(":")[0] if ":" in self.model else self.model
+            if any(model_short in name for name in model_names):
+                logger.info(f"[Ollama] Model '{self.model}' is available")
+                return True
+
+            logger.info(f"[Ollama] Pulling model '{self.model}'...")
+            pull_response = self.session.post(
+                f"{self.endpoint}/api/pull",
+                json={"name": self.model},
+                stream=True,
+                timeout=600,
+            )
+            for line in pull_response.iter_lines():
+                if line:
+                    logger.info(f"[Ollama] {line.decode('utf-8')}")
+            logger.info(f"[Ollama] Model '{self.model}' pulled successfully")
+            return True
+        except Exception as e:
+            logger.error(f"[Ollama] Model check/pull failed: {e}")
+            return False
+
+    def _send_to_ollama_vlm(
+        self,
+        image_path: str,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """Send image to Ollama - uses same model for text + images."""
+        return self._send_to_ollama(
+            prompt, images=[image_path], system_prompt=system_prompt
+        )
+
+    def _send_to_api(
+        self,
+        prompt: str,
+        images: Optional[List[str]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """Send request to external API."""
+        request_start = time.time()
+        files_to_close = []
+
+        try:
+            enhanced_prompt = self._build_prompt(prompt, system_prompt)
+
+            base_data = {
+                "message": enhanced_prompt,
+            }
+
+            if self.api_key:
+                headers = {
+                    "x-api-key": self.api_key,
+                    "Authorization": f"Bearer {self.api_key}",
+                }
+            else:
+                headers = {}
+
+            files = None
+            if images:
+                files = self._prepare_images_multipart(images)
+                files_to_close = [f[1][1] for f in files] if files else []
+                logger.info(f"[API] Prepared {len(files) if files else 0} images")
+
+            timeout = 120 if images else 60
+
+            try:
+                if files:
+                    response = self.session.post(
+                        self.endpoint,
+                        headers=headers,
+                        data=base_data,
+                        files=files,
+                        stream=True,
+                        timeout=timeout,
+                    )
+                else:
+                    response = self.session.post(
+                        self.endpoint,
+                        headers=headers,
+                        json=base_data,
+                        stream=True,
+                        timeout=timeout,
+                    )
+
+                response.raise_for_status()
+                response_data = self._handle_api_response(response)
+
+            finally:
+                for fh in files_to_close:
+                    try:
+                        fh.close()
+                    except:
+                        pass
+
+            if not response_data.get("success", True):
+                return response_data
+
+            request_time = (time.time() - request_start) * 1000
+            logger.info(f"[API] Request completed in {request_time:.1f}ms")
+
+            return self.process_llm_response(response_data, images)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[API] Request failed: {e}")
+            return {"error": f"API request failed: {str(e)}", "success": False}
+        except Exception as e:
+            logger.error(f"[API] Unexpected error: {e}")
+            return {"error": str(e), "success": False}
+
+    def _send_to_api_vlm(
+        self,
+        image_path: str,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+    ) -> Dict:
+        """Send image to API - uses same model for text + images."""
+        return self._send_to_api(
+            prompt, images=[image_path], system_prompt=system_prompt
+        )
+
+    def _handle_ollama_response(self, response: dict) -> dict:
+        """Handle Ollama API response."""
+        try:
+            response_text = response.get("response", "")
+            return {
+                "response": response_text,
+                "model": response.get("model", self.model),
+                "total_duration": response.get("total_duration", 0),
+                "eval_count": response.get("eval_count", 0),
+                "prompt_eval_count": response.get("prompt_eval_count", 0),
+                "success": True,
+                "raw_response": response,
+            }
+        except Exception as e:
+            logger.error(f"Error handling Ollama response: {e}")
+            return {"error": str(e), "success": False}
+
+    def _handle_api_response(self, response) -> Dict:
+        """Parse NDJSON streaming response from API."""
         content_parts = []
         final_message = None
         run_id = None
@@ -124,12 +433,11 @@ class LLMPromptHandler:
                         response_metadata = message_data.get("response_metadata", {})
                         model_name = response_metadata.get("model_name", "unknown")
                     elif event_type == "done":
-                        logger.info(f"Stream completed: {run_id}")
                         break
                 except json.JSONDecodeError:
                     continue
         except Exception as e:
-            logger.error(f"Error in NDJSON streaming: {e}")
+            logger.error(f"Error in API streaming: {e}")
 
         response_text = final_message or "".join(content_parts)
 
@@ -145,120 +453,22 @@ class LLMPromptHandler:
             "success": True,
         }
 
-    # 🔑 ALTERAÇÃO PRINCIPAL: Adicionado argumento 'system_instruction'
-    def send_to_llm(
-        self, prompt: str, images: List[str] = None, system_instruction: str = None
-    ) -> Dict:
-        """
-        Sends request to LLM. Supports overriding the system prompt.
-        """
-        request_start = time.time()
-        files_to_close = []
-
-        try:
-            # Disable cache when system_instruction is provided (for VLM mode)
-            # Check for None explicitly, not just falsy (empty string should also bypass cache)
-            if system_instruction is not None:
-                enhanced_prompt = self._build_enhanced_prompt(
-                    prompt, system_instruction
-                )
-            else:
-                prompt_key = hash(prompt + (system_instruction or ""))
-                enhanced_prompt = self._enhanced_prompt_cache.get(prompt_key)
-
-                if not enhanced_prompt:
-                    enhanced_prompt = self._build_enhanced_prompt(
-                        prompt, system_instruction
-                    )
-                    if len(self._enhanced_prompt_cache) < 100:
-                        self._enhanced_prompt_cache[prompt_key] = enhanced_prompt
-
-            base_data = {
-                "channel_id": self.channel_id,
-                "thread_id": self.thread_id,
-                "user_info": "{}",
-                "message": enhanced_prompt,
-            }
-
-            headers = {"x-api-key": API_KEY}
-            files = None
-
-            if images:
-                image_prep_start = time.time()
-                files = self._prepare_images_optimized(images)
-                files_to_close = [f[1][1] for f in files]
-                image_prep_time = (time.time() - image_prep_start) * 1000
-                logger.info(
-                    f"[IMG] Prepared {len(files)} images in {image_prep_time:.1f}ms"
-                )
-
-            try:
-                # Use longer timeout for images
-                timeout_val = 60 if files else 10
-
-                if files:
-                    response = self.session.post(
-                        self.endpoint,
-                        headers=headers,
-                        data=base_data,
-                        files=files,
-                        stream=True,
-                        timeout=timeout_val,
-                    )
-                else:
-                    response = self.session.post(
-                        self.endpoint,
-                        headers=headers,
-                        data=base_data,
-                        stream=True,
-                        timeout=timeout_val,
-                    )
-
-                response.raise_for_status()
-                response_data = self._handle_ndjson_responses(response)
-
-            finally:
-                for fh in files_to_close:
-                    try:
-                        fh.close()
-                    except:
-                        pass
-
-            if not response_data.get("success", True):
-                return response_data
-
-            request_time = (time.time() - request_start) * 1000
-            logger.info(f"[LLM] Total request time: {request_time:.1f}ms")
-
-            return self.process_llm_response(response_data, images)
-
-        except requests.exceptions.RequestException as e:
-            self._log_request_error(e)
-            return {"error": f"LLM API request failed: {str(e)}", "success": False}
-
-    # 🔑 ALTERAÇÃO PRINCIPAL: Lógica de override do prompt
-    def _build_enhanced_prompt(
-        self, user_prompt: str, override_system: str = None
+    def _build_prompt(
+        self, user_prompt: str, override_system: Optional[str] = None
     ) -> str:
-        """Build prompt efficiently with optional override."""
+        """Build the complete prompt."""
         parts = []
 
-        # Se houver override (mesmo que string vazia), usa-o. Senão, usa o self.setup_prompt (padrão)
-        if override_system is not None:
-            system_prompt_to_use = override_system
-        else:
-            system_prompt_to_use = self.setup_prompt
+        system_to_use = (
+            override_system if override_system is not None else self.system_prompt
+        )
 
-        # Só adiciona system prompt se não for vazio
-        if system_prompt_to_use:
-            parts.append(system_prompt_to_use + "\n\n")
+        if system_to_use:
+            parts.append(system_to_use + "\n\n")
 
-        # Se houver override (modo VLM), não adicionamos os cabeçalhos padrão de User Request
         if override_system is not None:
-            # Em modo VLM, apenas adicionamos o prompt do utilizador, sem headers
             parts.append(f"{user_prompt}\n")
         else:
-            # Modo normal
             parts.append(
                 "=" * 50 + "\nUSER REQUEST\n" + "=" * 50 + "\n\n" + user_prompt + "\n\n"
             )
@@ -275,16 +485,58 @@ Respond with:
 
         return "".join(parts)
 
-    def _prepare_images_optimized(
+    def _load_image_as_base64(self, image_path: str) -> Optional[str]:
+        """Load image file and return base64 encoded string."""
+        try:
+            if not os.path.exists(image_path):
+                logger.error(f"[IMG] Image not found: {image_path}")
+                return None
+
+            max_size = self.MAX_IMAGE_SIZE_MB * 1024 * 1024
+            if os.path.getsize(image_path) > max_size:
+                logger.warning(f"[IMG] Image too large: {image_path}")
+                return None
+
+            with open(image_path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+
+        except Exception as e:
+            logger.error(f"[IMG] Error loading image: {e}")
+            return None
+
+    def _prepare_images_base64(self, images: List[str]) -> List[str]:
+        """Prepare images as base64 strings for Ollama."""
+        base64_images = []
+
+        def load_image(path_or_b64):
+            if os.path.exists(path_or_b64):
+                return self._load_image_as_base64(path_or_b64)
+            elif len(path_or_b64) > 100:
+                return path_or_b64
+            return None
+
+        futures = {self.executor.submit(load_image, img): img for img in images}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                base64_images.append(result)
+
+        logger.info(
+            f"[IMG] Prepared {len(base64_images)}/{len(images)} images for Ollama"
+        )
+        return base64_images
+
+    def _prepare_images_multipart(
         self, images: List[str]
     ) -> List[Tuple[str, Tuple[str, Any, str]]]:
-        """Prepara múltiplas imagens (Lista de Tuplos)."""
+        """Prepare images for multipart form upload."""
         if not images:
             return []
+
         files = []
         max_size = self.MAX_IMAGE_SIZE_MB * 1024 * 1024
 
-        def load_image_fast(path):
+        def load_image(path):
             if not os.path.exists(path):
                 return None
             try:
@@ -296,61 +548,66 @@ Respond with:
             except:
                 return None
 
-        futures = {self.executor.submit(load_image_fast, p): p for p in images}
+        futures = {self.executor.submit(load_image, p): p for p in images}
         for future in as_completed(futures):
             res = future.result()
             if res:
                 files.append(res)
 
-        logger.info(f"[IMG] Loaded {len(files)}/{len(images)} images successfully")
+        logger.info(f"[IMG] Prepared {len(files)}/{len(images)} images for upload")
         return files
 
-    # ... (MÉTODOS AUXILIARES: _log_request_error, process_llm_response, etc. - MANTÊM-SE IGUAIS) ...
-    def _log_request_error(self, e):
-        logger.error(f"Req failed: {e}")
-
-    def process_llm_response(self, response_data, images=None):
+    def process_llm_response(self, response_data: Dict, images=None) -> Dict:
+        """Process LLM response and extract text and JSON commands."""
         try:
             txt = response_data.get("response", "")
             clean = self._clean_response_text(txt)
             jsons = self._extract_json_commands(clean)
-            return {"text_content": clean, "json_strings": jsons, "success": True}
+            return {
+                "text_content": clean,
+                "json_strings": jsons,
+                "success": True,
+                "raw_response": response_data.get("raw_response"),
+            }
         except Exception as e:
             return {"error": str(e), "success": False}
 
-    def _clean_response_text(self, text):
+    def _clean_response_text(self, text: str) -> str:
+        """Clean response text by removing thinking tags."""
         if not text:
             return text
-        for p in self._THINKING_PATTERNS:
-            text = p.sub("", text)
+        for pattern in self._THINKING_PATTERNS:
+            text = pattern.sub("", text)
         return self._NEWLINE_PATTERN.sub("\n\n", text).strip()
 
     @lru_cache(maxsize=256)
-    def _is_command_json_cached(self, s):
+    def _is_command_json_cached(self, s: str) -> bool:
+        """Check if string is a command JSON."""
         try:
-            return isinstance(json.loads(s), dict) and "command" in json.loads(s)
+            parsed = json.loads(s)
+            return isinstance(parsed, dict) and "command" in parsed
         except:
             return False
 
-    def _extract_json_commands(self, text):
-        cmds = []
-        for m in self._JSON_PATTERN.findall(text):
-            if self._is_command_json_cached(m):
-                cmds.append(m)
-        return cmds
+    def _extract_json_commands(self, text: str) -> List[str]:
+        """Extract JSON command strings from text."""
+        commands = []
+        for match in self._JSON_PATTERN.findall(text):
+            if self._is_command_json_cached(match):
+                commands.append(match)
+        return commands
 
-    def save_base64_image(self, b64, ext="png"):
-        return None
-
-    def send_output_to_llm(self, out):
-        return self.send_to_llm(json.dumps(out))
+    def send_output_to_llm(self, output: Dict) -> Dict:
+        """Send command output to LLM for processing."""
+        return self.send_to_llm(json.dumps(output))
 
     def cleanup(self):
-        pass
-
-    def __del__(self):
+        """Cleanup resources."""
         try:
             self.session.close()
             self.executor.shutdown(wait=False)
         except:
             pass
+
+    def __del__(self):
+        self.cleanup()
