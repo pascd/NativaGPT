@@ -34,12 +34,17 @@ _ros_env_lock = threading.Lock()
 
 
 def detect_ros_environment():
-    """
-    Detects active or available ROS distribution.
-    Returns: (version_int, distro_name, setup_path)
-    Example: (2, 'humble', '/opt/ros/humble/setup.bash')
+    """Detect the active or available ROS distribution, caching the result.
 
-    Uses caching for faster repeated calls.
+    Checks the ROS_DISTRO/ROS_VERSION environment variables first, then
+    falls back to scanning common /opt/ros/<distro>/setup.bash paths (ROS 2
+    distros are checked before ROS 1 ones).
+
+    Returns:
+        A tuple `(version, distro, setup_path)`, e.g. `(2, 'humble',
+        '/opt/ros/humble/setup.bash')`. `setup_path` is None when the
+        environment variables were used directly instead of a filesystem
+        scan. All three are None if no ROS installation could be found.
     """
     global _ros_env_cache
 
@@ -103,7 +108,7 @@ _SHELL_WARM_LOCK = threading.Lock()
 
 
 def _warmup_shell():
-    """Background warmup for faster subprocess calls."""
+    """Run a throwaway sourced-shell command once to warm the shell cache; failures are ignored."""
     global _SHELL_WARMED
     try:
         source_cmd = get_source_cmd()
@@ -124,14 +129,28 @@ warmup_thread.start()
 
 
 def get_source_cmd():
-    """Returns the bash command to source the correct environment."""
+    """Build the bash snippet that sources the detected ROS setup script.
+
+    Returns:
+        `"source <setup_path>"` if a setup script was found, otherwise
+        `"true"` (a no-op, assuming the environment is already sourced).
+    """
     if ROS_SETUP_PATH:
         return f"source {ROS_SETUP_PATH}"
     return "true"  # Assume already sourced if no path found but vars exist
 
 
 def run_bridge_script(script_content):
-    """Writes and runs a python script using the System Python + ROS Env."""
+    """Write a Python script to a temp file and run it with the system Python inside the sourced ROS environment.
+
+    Args:
+        script_content: Full source code of the script to run.
+
+    Returns:
+        A tuple `(success, stdout, stderr)` where `success` is True if the
+        subprocess exited with code 0. The temp script file is deleted
+        afterwards.
+    """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(script_content)
         script_path = f.name
@@ -164,7 +183,16 @@ _CACHE_LOCK = threading.Lock()
 
 
 def run_cli_command(cmd_str):
-    """Runs a shell command inside the ROS environment with caching for repeated commands."""
+    """Run a shell command inside the sourced ROS environment, caching results for a few read-only command patterns.
+
+    Args:
+        cmd_str: The shell command to execute (e.g. "rostopic list").
+
+    Returns:
+        A tuple `(success, stdout, stderr)`. For a small allow-list of
+        read-only topic-listing commands, a cached result younger than 5
+        seconds is returned instead of re-running the subprocess.
+    """
     # Check cache for simple read-only commands
     cacheable_patterns = [
         "rostopic list",
@@ -203,7 +231,13 @@ def run_cli_command(cmd_str):
 
 @mcp.tool()
 async def get_system_status() -> str:
-    """Check which ROS version is active."""
+    """Check which ROS version is active.
+
+    Returns:
+        A status string naming the detected ROS version/distro and the
+        system Python used to run bridge scripts, or an error message if no
+        ROS installation was found.
+    """
     if not ROS_DISTRO:
         return "❌ No ROS installation found on this system."
     return f"✅ Active System: ROS {ROS_VERSION} ({ROS_DISTRO})\nUsing System Python: {SYSTEM_PYTHON}"
@@ -211,7 +245,13 @@ async def get_system_status() -> str:
 
 @mcp.tool()
 async def list_topics() -> str:
-    """List all active ROS topics."""
+    """List all active ROS topics.
+
+    Returns:
+        A newline-separated list of topic names (with type annotations on
+        ROS 2), or an error message if ROS is unavailable or the underlying
+        CLI command failed.
+    """
     if not ROS_DISTRO:
         return "ROS not found."
 
@@ -231,7 +271,15 @@ async def list_topics() -> str:
 
 @mcp.tool()
 async def get_topic_info(topic_name: str) -> str:
-    """Get detailed info about a topic."""
+    """Get detailed info about a topic.
+
+    Args:
+        topic_name: Name of the ROS topic to inspect.
+
+    Returns:
+        The CLI output describing the topic's type, publishers, and
+        subscribers, or an error message.
+    """
     if not ROS_DISTRO:
         return "ROS not found."
 
@@ -246,7 +294,15 @@ async def get_topic_info(topic_name: str) -> str:
 
 @mcp.tool()
 async def read_topic(topic_name: str) -> str:
-    """Read one message from a topic (text only)."""
+    """Read one message from a topic (text only).
+
+    Args:
+        topic_name: Name of the ROS topic to read from.
+
+    Returns:
+        The echoed message text (truncated to 2500 characters), a timeout
+        message if no message arrived, or an error message.
+    """
     if not ROS_DISTRO:
         return "ROS not found."
 
@@ -267,9 +323,22 @@ async def read_topic(topic_name: str) -> str:
 
 @mcp.tool()
 async def capture_camera_image(topic_name: str = "/camera/color/image_raw") -> str:
-    """
-    Captures an image using a Unified System Bridge.
-    Works for both ROS 1 and ROS 2 by injecting the correct script.
+    """Capture a single frame from a camera topic and save it as a JPEG.
+
+    Generates a short standalone Python bridge script (ROS 1 or ROS 2,
+    depending on what was detected) that subscribes to `topic_name`,
+    converts the received `sensor_msgs/Image` to OpenCV via `cv_bridge`, and
+    writes it to a temp file; the script is then run in a separate
+    subprocess via `run_bridge_script`, using the system Python inside the
+    sourced ROS environment.
+
+    Args:
+        topic_name: Name of the image topic to capture from.
+
+    Returns:
+        A JSON string with `status`, `image_path`, and `files` on success,
+        or an error message describing a timeout, missing dependency, or
+        other failure.
     """
     if not ROS_DISTRO:
         return "ROS not found."
@@ -280,6 +349,12 @@ async def capture_camera_image(topic_name: str = "/camera/color/image_raw") -> s
     script_content = ""
 
     if ROS_VERSION == 1:
+        # NOTE: `script_content` below is NOT a real function definition in
+        # this module - it is the literal source of a standalone ROS 1
+        # bridge script (built via f-string interpolation) that gets written
+        # to a temp file and executed in its own subprocess by
+        # run_bridge_script(). The `capture()` function defined inside this
+        # string only exists in that child script's namespace, not here.
         script_content = f"""
 import rospy
 import cv2
@@ -309,6 +384,11 @@ if __name__ == "__main__":
     capture()
 """
     elif ROS_VERSION == 2:
+        # NOTE: same as the ROS 1 branch above - `script_content` here is the
+        # literal source of a separate, ROS 2-specific bridge script run as
+        # its own subprocess via run_bridge_script(). Its `capture()` lives
+        # only in that generated script's namespace, so this is not a
+        # duplicate definition of the ROS 1 `capture()` above.
         script_content = f"""
 import rclpy
 from rclpy.node import Node
@@ -378,6 +458,7 @@ if __name__ == "__main__":
 
 
 def main():
+    """CLI entry point: print the detected ROS environment and run the MCP server over stdio."""
     print(f"ROS UNIFIED MCP SERVER", file=sys.stderr)
     if ROS_DISTRO:
         print(f"Detected: ROS {ROS_VERSION} ({ROS_DISTRO}) at {ROS_SETUP_PATH}", file=sys.stderr)

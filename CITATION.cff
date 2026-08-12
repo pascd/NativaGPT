@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "NativaGPT"
+type: software
+authors:
+  - family-names: "Dias"
+    given-names: "Pedro Afonso"
+version: 0.1.0
+date-released: "2026-08-12"
+url: "https://github.com/pascd/NativaGPT"
+repository-code: "https://github.com/pascd/NativaGPT"
+license: MIT

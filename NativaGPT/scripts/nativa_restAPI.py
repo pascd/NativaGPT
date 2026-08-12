@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""
-NativaGPT REST Service
-Runs with Python 3.10+ and provides HTTP API for ROS nodes
-With improved timeout handling and debugging
+"""Flask REST API exposing NativaGPT's MCP wrapper over HTTP.
+
+Wraps a single global ``NativaMCPWrapper`` instance behind HTTP endpoints
+(chat, history, tool listing, status, health, shutdown) so that
+non-Python clients — such as ROS nodes — can drive NativaGPT's LLM/MCP
+pipeline over a local network connection instead of embedding it directly.
+Requires Python 3.10+.
 """
 
 from flask import Flask, request, jsonify
@@ -42,7 +45,20 @@ MAX_REQUEST_TIMEOUT = 180  # seconds - 3 minutes maximum
 
 
 def initialize_wrapper(config_path: str = None):
-    """Initialize the NativaMCPWrapper with configuration."""
+    """Create the global ``wrapper`` instance from a config file.
+
+    If ``config_path`` is not given, searches a few candidate locations
+    relative to this script for ``config/config_default.json`` and uses
+    the first one that exists.
+
+    Args:
+        config_path: Explicit path to a config JSON file, or None to
+            auto-detect ``config_default.json``.
+
+    Returns:
+        True if the wrapper was created successfully; False if no config
+        file could be found/read or wrapper construction raised.
+    """
     global wrapper
     try:
         if config_path is None:
@@ -89,7 +105,13 @@ def initialize_wrapper(config_path: str = None):
 
 @app.route("/", methods=["GET"])
 def index():
-    """Root endpoint - service information."""
+    """Root endpoint listing service metadata and available endpoints.
+
+    Returns:
+        A 200 JSON response describing the service name/version/status,
+        whether the wrapper is initialized, a map of available endpoints,
+        and the configured request timeouts.
+    """
     return jsonify({
         "service": "NativaGPT REST API",
         "version": "1.0.0",
@@ -113,7 +135,13 @@ def index():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint."""
+    """Lightweight health check endpoint for uptime/readiness probes.
+
+    Returns:
+        A 200 JSON response with a static "healthy" status, whether the
+        wrapper is initialized, and the list of currently connected MCP
+        server names (empty if not initialized).
+    """
     return jsonify({
         "status": "healthy",
         "service": "NativaGPT",
@@ -209,7 +237,13 @@ def chat():
 
 @app.route("/history", methods=["GET"])
 def get_history():
-    """Get conversation history."""
+    """Return the full conversation history and its length/cap.
+
+    Returns:
+        A 200 JSON response with ``history`` (list of exchanges),
+        ``history_length``, and ``max_history`` on success; 503 if the
+        wrapper is not initialized; 500 with an error message on failure.
+    """
     if wrapper is None:
         return jsonify({"success": False, "error": "Service not initialized"}), 503
 
@@ -227,7 +261,12 @@ def get_history():
 
 @app.route("/history", methods=["DELETE"])
 def clear_history():
-    """Clear conversation history."""
+    """Clear the wrapper's conversation history.
+
+    Returns:
+        A 200 JSON success response on success; 503 if the wrapper is not
+        initialized; 500 with an error message on failure.
+    """
     if wrapper is None:
         return jsonify({"success": False, "error": "Service not initialized"}), 503
 
@@ -242,7 +281,13 @@ def clear_history():
 
 @app.route("/tools", methods=["GET"])
 def list_tools():
-    """List available MCP servers and tool count."""
+    """List connected MCP server names and the number of loaded tools.
+
+    Returns:
+        A 200 JSON response with ``servers`` and ``tool_count`` on
+        success; 503 if the wrapper is not initialized; 500 with an error
+        message on failure.
+    """
     if wrapper is None:
         return jsonify({"success": False, "error": "Service not initialized"}), 503
 
@@ -259,7 +304,14 @@ def list_tools():
 
 @app.route("/status", methods=["GET"])
 def get_status():
-    """Get detailed service status."""
+    """Return a detailed status snapshot of the running service.
+
+    Returns:
+        A 200 JSON response with a ``status`` object covering
+        initialization state, connected servers/tool count, conversation
+        history length/cap, and configured timeouts; 503 if the wrapper
+        is not initialized; 500 with an error message on failure.
+    """
     if wrapper is None:
         return jsonify({
             "success": False,
@@ -289,7 +341,20 @@ def get_status():
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
-    """Gracefully shutdown the service."""
+    """Shut down the MCP wrapper and (if possible) the Flask dev server.
+
+    Shuts down and clears the global ``wrapper``, then attempts to invoke
+    Werkzeug's ``werkzeug.server.shutdown`` function from the request
+    environment (only available when running the Flask development
+    server outside threaded/reloader edge cases). If that function is
+    unavailable, the process itself is not stopped and the caller is
+    advised to press Ctrl+C.
+
+    Returns:
+        A 200 JSON success response describing whether the shutdown
+        signal was actually sent to the server; 500 with an error message
+        on failure.
+    """
     global wrapper
     try:
         if wrapper:
@@ -321,7 +386,14 @@ def shutdown():
 
 @app.errorhandler(404)
 def not_found(e):
-    """Handle 404 errors."""
+    """Flask error handler for unmatched routes (404 Not Found).
+
+    Args:
+        e: The exception raised by Flask/Werkzeug for the missing route.
+
+    Returns:
+        A 404 JSON error response pointing the caller to ``GET /``.
+    """
     return jsonify({
         "success": False,
         "error": "Endpoint not found",
@@ -331,7 +403,14 @@ def not_found(e):
 
 @app.errorhandler(504)
 def handle_timeout(e):
-    """Handle timeout errors."""
+    """Flask error handler for gateway timeouts (504 Gateway Timeout).
+
+    Args:
+        e: The exception raised for the timed-out request.
+
+    Returns:
+        A 504 JSON error response indicating the request took too long.
+    """
     return jsonify({
         "success": False,
         "error": "Request timed out",
@@ -341,7 +420,14 @@ def handle_timeout(e):
 
 @app.errorhandler(500)
 def handle_internal_error(e):
-    """Handle internal server errors."""
+    """Flask error handler for uncaught server errors (500 Internal Server Error).
+
+    Args:
+        e: The exception that caused the 500 response.
+
+    Returns:
+        A 500 JSON error response including the exception message.
+    """
     logger.error(f"Internal server error: {e}")
     return jsonify({
         "success": False,
@@ -351,7 +437,16 @@ def handle_internal_error(e):
 
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals."""
+    """OS signal handler that shuts down the wrapper and exits the process.
+
+    Registered for SIGINT/SIGTERM in ``main`` so that Ctrl+C or a service
+    manager stop request cleanly releases MCP connections before exiting.
+
+    Args:
+        sig: The signal number received.
+        frame: The current stack frame (unused; required by the signal
+            handler signature).
+    """
     logger.info("\n🛑 Received shutdown signal")
     global wrapper
     if wrapper:
@@ -363,7 +458,14 @@ def signal_handler(sig, frame):
 
 
 def main():
-    """Main entry point."""
+    """CLI entry point: parse args, initialize the wrapper, and run the Flask server.
+
+    Supports ``--config``, ``--host``, ``--port``, ``--timeout`` and
+    ``--debug`` command-line options. Registers SIGINT/SIGTERM handlers,
+    initializes the global wrapper (exiting with status 1 on failure),
+    then runs the Flask app in threaded mode until interrupted, shutting
+    down the wrapper in the ``finally`` block regardless of outcome.
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description="NativaGPT REST Service")

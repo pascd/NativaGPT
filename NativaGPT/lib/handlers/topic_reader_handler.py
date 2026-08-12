@@ -1,3 +1,13 @@
+"""Multi-source "topic" reading for ROS, MQTT, and file-based data feeds.
+
+Provides :class:`TopicReaderHandler`, which reads the latest data from
+configured ROS topics, MQTT topics, and file-based sources (log files or
+image directories), normalizing each into a common item shape (with
+``modality``, ``data``, and metadata), optionally caching/persisting ROS
+subscriptions, saving decoded images to a temporary directory, and keeping
+a bounded in-memory history of recently read items.
+"""
+
 import os
 import glob
 import time
@@ -69,6 +79,22 @@ class TopicReaderHandler:
     ENABLE_IMAGE_CACHE = True  # Cache converted images
 
     def __init__(self, config: ConfigManager):
+        """Initialize the handler from configuration and set up runtime state.
+
+        Reads the ``"topic_config"`` section of ``config`` to determine
+        message history size, whether persistent ROS subscriptions and
+        automatic topic processing are enabled, creates a temporary
+        directory for saved images/files, builds the topic cache, checks
+        for a reachable ROS master, and (if persistent subscriptions are
+        enabled and ROS is available) pre-subscribes to configured ROS
+        topics and waits briefly for their initial messages.
+
+        Args:
+            config: The application's :class:`ConfigManager`, expected to
+                provide a ``"topic_config"`` mapping with keys such as
+                ``max_message_history``, ``enable_persistent_subscriptions``,
+                ``auto_process_topics``, and ``subscriptions``.
+        """
         logger.info("Initializing TopicReaderHandler v2.3 (Toggle-Capable)...")
 
         self.config = config
@@ -133,18 +159,31 @@ class TopicReaderHandler:
         logger.info("Topic processing DISABLED")
 
     def toggle_topic_processing(self) -> bool:
-        """Toggle topic processing and return new state."""
+        """Toggle topic processing and return new state.
+
+        Returns:
+            bool: The new value of ``topic_processing_enabled``.
+        """
         self.topic_processing_enabled = not self.topic_processing_enabled
         logger.info(f"Topic processing toggled to: {self.topic_processing_enabled}")
         return self.topic_processing_enabled
 
     def is_topic_processing_enabled(self) -> bool:
-        """Check if topic processing is currently enabled."""
+        """Check if topic processing is currently enabled.
+
+        Returns:
+            bool: True if topic processing is currently enabled.
+        """
         return self.topic_processing_enabled
 
     @property
     def bridge(self):
-        """Lazy initialization of CvBridge."""
+        """Lazily create and return the shared ``CvBridge`` instance.
+
+        Returns:
+            The shared :class:`CvBridge` instance, or ``None`` if
+            ``cv_bridge`` is not installed.
+        """
         if self._bridge is None and CvBridge is not None:
             with self._bridge_lock:
                 if self._bridge is None:
@@ -165,7 +204,12 @@ class TopicReaderHandler:
                         self._topic_cache[name] = topic
 
     def _check_ros_master(self) -> bool:
-        """Check if ROS master is available and initialize node."""
+        """Check if ROS master is available and initialize node.
+
+        Returns:
+            bool: True if a ROS master was reachable (and the node was
+            initialized if needed), False otherwise.
+        """
         try:
             import rosgraph
             rosgraph.Master('/nativagpt_probe').getPid()
@@ -182,7 +226,15 @@ class TopicReaderHandler:
 
     @lru_cache(maxsize=32)
     def _get_message_class(self, msg_type_str: str):
-        """Cached message class loading."""
+        """Resolve and cache a ROS message class from its "pkg/Type" string.
+
+        Args:
+            msg_type_str: Message type in ``"<package>/<ClassName>"`` form
+                (e.g. ``"std_msgs/String"``).
+
+        Returns:
+            The imported ROS message class.
+        """
         pkg, cls = msg_type_str.split("/")
         return getattr(importlib.import_module(f"{pkg}.msg"), cls)
 
@@ -210,7 +262,15 @@ class TopicReaderHandler:
                 logger.error(f"[ROS] Failed to subscribe to {name}: {e}")
 
     def _wait_for_initial_messages(self, timeout: float):
-        """Wait briefly for initial messages on all subscribed topics."""
+        """Block until all persistent ROS subscribers have received a message.
+
+        Polls ``_latest_ros_messages`` until every topic in
+        ``_ros_subscribers`` has a cached message or ``timeout`` elapses;
+        logs a warning listing any topics still missing a message.
+
+        Args:
+            timeout: Maximum time in seconds to wait.
+        """
         if not self._ros_subscribers:
             return
 
@@ -262,12 +322,31 @@ class TopicReaderHandler:
             self._history.clear()
 
     def get_history(self) -> List[Dict[str, Any]]:
-        """Get recent message history."""
+        """Get recent message history.
+
+        Returns:
+            list: A snapshot copy of the bounded item history (most recent
+            up to ``max_message_history`` items).
+        """
         with self._history_lock:
             return list(self._history)
 
     def process_all_topics(self) -> Dict[str, Any]:
-        """Process all enabled topics - only if topic processing is enabled."""
+        """Read all enabled ROS, MQTT, and file topics in parallel.
+
+        Process all enabled topics - only if topic processing is enabled.
+        Submits a read task per enabled topic to the internal thread pool,
+        collects the results as they complete, and appends them to the
+        in-memory history. If topic processing is disabled, returns
+        immediately without reading anything.
+
+        Returns:
+            dict: A dict with ``"generated_at"`` (ISO timestamp),
+            ``"items"`` (list of normalized topic-read results), and
+            ``"tmp_dir"`` (path to the temp directory used for saved
+            files/images). Includes ``"topics_disabled": True`` and an
+            empty ``"items"`` list when topic processing is disabled.
+        """
 
         # Check if topic processing is enabled
         if not self.topic_processing_enabled:
@@ -323,14 +402,41 @@ class TopicReaderHandler:
         }
 
     def _read_ros_topic(self, topic: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Routes to persistent cache or JIT reader based on config."""
+        """Route a ROS topic read to the persistent-cache or JIT reader.
+
+        Args:
+            topic: The ROS topic's configuration dict (name, message type,
+                timeouts, analysis hints, etc.).
+
+        Returns:
+            Optional[dict]: The normalized topic item, or ``None`` if no
+            message was available.
+        """
         if self.persistent_subs_enabled:
             return self._read_ros_topic_persistent(topic)
         else:
             return self._read_ros_topic_jit(topic)
 
     def _read_ros_topic_persistent(self, topic: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Read latest cached ROS message from persistent subscriber."""
+        """Read latest cached ROS message from persistent subscriber.
+
+        Looks up the most recently received message for this topic (cached
+        by a persistent subscriber's callback), discards it if older than
+        the topic's ``max_message_age``, and converts it to the common item
+        shape.
+
+        Args:
+            topic: The ROS topic's configuration dict, expected to include
+                ``name``, ``message_type``, and optionally ``max_message_age``
+                and ``analysis_hints``.
+
+        Returns:
+            Optional[dict]: The normalized topic item (with ``id``,
+            ``source``, ``name``, ``timestamp``, ``modality``, ``data``,
+            ``analysis_hints``, ``extra``, ``message_age_seconds``), or
+            ``None`` if ROS is unavailable, no message has been received
+            yet, the cached message is too old, or conversion failed.
+        """
         if not self.ros_ok:
             return None
 
@@ -375,7 +481,23 @@ class TopicReaderHandler:
             return None
 
     def _read_ros_topic_jit(self, topic: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """On-demand (JIT) ROS topic read. Subscribes, waits, and unsubscribes."""
+        """On-demand (JIT) ROS topic read. Subscribes, waits, and unsubscribes.
+
+        Blocks (up to the topic's ``timeout``) via ``rospy.wait_for_message``
+        for a single message, then converts it to the common item shape.
+        Used when persistent subscriptions are disabled.
+
+        Args:
+            topic: The ROS topic's configuration dict, expected to include
+                ``name``, ``message_type``, and optionally ``timeout`` and
+                ``analysis_hints``.
+
+        Returns:
+            Optional[dict]: The normalized topic item (same shape as
+            :meth:`_read_ros_topic_persistent`), or ``None`` if ROS is
+            unavailable, required fields are missing, the wait timed out,
+            or an error occurred.
+        """
         if not self.ros_ok or rospy is None:
             return None
 
@@ -424,7 +546,24 @@ class TopicReaderHandler:
             return None
 
     def _convert_ros_message(self, msg_type: str, msg) -> Tuple[str, Any, Dict]:
-        """Convert ROS message to (modality, data, extra) with optimized handlers."""
+        """Convert ROS message to (modality, data, extra) with optimized handlers.
+
+        Fast-paths ``sensor_msgs/Image`` (saved to a temp file),
+        ``std_msgs/String``/numeric/bool types (converted to text),
+        ``turtlesim/Pose`` and ``sensor_msgs/JointState`` (converted to
+        structured dicts); other types fall back to a generic recursive
+        dict conversion, or a plain ``str()`` if that fails.
+
+        Args:
+            msg_type: The ROS message type string (e.g. ``"std_msgs/String"``).
+            msg: The deserialized ROS message instance.
+
+        Returns:
+            tuple: ``(modality, data, extra)`` where ``modality`` is one of
+            ``"image"``, ``"text"``, or ``"structured"``, ``data`` is the
+            converted payload (a file path for images), and ``extra`` is a
+            dict of metadata (at least ``{"message_type": msg_type}``).
+        """
         extra = {"message_type": msg_type}
 
         # Fast path for common types
@@ -457,7 +596,25 @@ class TopicReaderHandler:
             return "text", str(msg), extra
 
     def _save_ros_image_optimized(self, img_msg) -> str:
-        """OPTIMIZED: Save ROS Image with resizing and compression."""
+        """OPTIMIZED: Save ROS Image with resizing and compression.
+
+        Converts the image via ``cv_bridge``/OpenCV when available
+        (resizing to at most ``MAX_IMAGE_DIMENSION`` on the longest side and
+        encoding as JPEG at ``JPEG_QUALITY``), falling back to PIL, and
+        writes the result to a new file under the handler's temp directory.
+        Falls back to :meth:`_save_ros_image_fallback` on any error.
+
+        Args:
+            img_msg: A ``sensor_msgs/Image`` ROS message.
+
+        Returns:
+            str: Path to the saved image file.
+
+        Raises:
+            RuntimeError: Propagated from :meth:`_save_ros_image_fallback`
+                if that fallback also fails (e.g. neither OpenCV/cv_bridge
+                nor PIL is available).
+        """
         save_start = time.time()
 
         try:
@@ -519,7 +676,21 @@ class TopicReaderHandler:
             return self._save_ros_image_fallback(img_msg)
 
     def _save_ros_image_fallback(self, img_msg) -> str:
-        """Fallback image saving method (original)."""
+        """Fallback image saving method (original).
+
+        Tries ``cv_bridge``/OpenCV first (no resizing/compression tuning),
+        then falls back to PIL, saving as PNG.
+
+        Args:
+            img_msg: A ``sensor_msgs/Image`` ROS message.
+
+        Returns:
+            str: Path to the saved image file.
+
+        Raises:
+            RuntimeError: If PIL is not available after the cv_bridge path
+                also failed or was unavailable.
+        """
         if self.bridge and cv2:
             try:
                 cv_img = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding="bgr8")
@@ -540,11 +711,29 @@ class TopicReaderHandler:
 
     @lru_cache(maxsize=64)
     def _get_slots_cached(self, obj_type):
-        """Cache object slots for repeated conversions."""
+        """Cache and return ``__slots__`` for a ROS message type.
+
+        Args:
+            obj_type: The message class/type to inspect.
+
+        Returns:
+            The type's ``__slots__`` (field names), or ``[]`` if it has none.
+        """
         return getattr(obj_type, "__slots__", [])
 
     def _msg_to_dict(self, msg) -> Dict:
-        """Optimized recursive ROS message to dict conversion."""
+        """Optimized recursive ROS message to dict conversion.
+
+        Walks ``msg``'s ``__slots__`` recursively, converting lists/tuples
+        element-wise and summarizing ``bytes``/``bytearray`` fields as
+        ``"<N bytes>"`` placeholders rather than embedding raw binary data.
+
+        Args:
+            msg: The ROS message instance to convert.
+
+        Returns:
+            dict: A nested dict representation of the message.
+        """
         def convert(x):
             if hasattr(x, "__slots__"):
                 slots = self._get_slots_cached(type(x))
@@ -557,7 +746,24 @@ class TopicReaderHandler:
         return convert(msg)
 
     def _read_mqtt_topic(self, topic: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Read MQTT topic with timeout."""
+        """Read MQTT topic with timeout.
+
+        Gets/creates a pooled MQTT client for the topic's broker,
+        subscribes just long enough to receive one message (up to
+        ``timeout`` seconds), then unsubscribes and decodes the payload.
+
+        Args:
+            topic: The MQTT topic's configuration dict, expected to include
+                ``name``, and optionally ``broker_host``, ``broker_port``,
+                ``timeout``, and ``analysis_hints``.
+
+        Returns:
+            Optional[dict]: The normalized topic item (with ``id``,
+            ``source``, ``name``, ``timestamp``, ``modality``, ``data``,
+            ``analysis_hints``, ``extra``), or ``None`` if the ``paho-mqtt``
+            library is unavailable, the topic has no name, the client could
+            not be created, or no message arrived before the timeout.
+        """
         if not mqtt:
             return None
 
@@ -599,7 +805,22 @@ class TopicReaderHandler:
         }
 
     def _get_mqtt_client(self, host: str, port: int, on_message_cb):
-        """Get or create MQTT client with connection pooling."""
+        """Get or create MQTT client with connection pooling.
+
+        Reuses an existing client for the given ``(host, port)`` if one is
+        already connected (rebinding its ``on_message`` callback), otherwise
+        creates, connects, and starts a new client's network loop.
+
+        Args:
+            host: MQTT broker hostname.
+            port: MQTT broker port.
+            on_message_cb: Callback invoked as ``(client, userdata, message)``
+                when a message is received.
+
+        Returns:
+            The connected ``mqtt.Client`` instance, or ``None`` if the
+            ``paho-mqtt`` library is unavailable or connecting failed.
+        """
         key = (host, port)
 
         with self._mqtt_lock:
@@ -623,7 +844,22 @@ class TopicReaderHandler:
             return None
 
     def _decode_mqtt_payload(self, payload: bytes) -> Tuple[str, Any, Dict]:
-        """Optimized MQTT payload decoding."""
+        """Optimized MQTT payload decoding.
+
+        Tries to parse ``payload`` as JSON first (extracting and saving any
+        embedded base64 image under keys ``image_base64``/``b64``/``image``),
+        then checks for raw binary image signatures, and finally falls back
+        to decoding as UTF-8 text (or a byte-count placeholder if that fails).
+
+        Args:
+            payload: The raw MQTT message payload bytes.
+
+        Returns:
+            tuple: ``(modality, data, extra)`` where ``modality`` is one of
+            ``"image"``, ``"structured"``, or ``"text"``, ``data`` is the
+            decoded payload (a file path for images), and ``extra`` is a
+            dict with a ``"format"`` key describing how it was decoded.
+        """
         # Try JSON first
         try:
             obj = json.loads(payload)
@@ -650,7 +886,17 @@ class TopicReaderHandler:
             return "text", f"<{len(payload)} bytes>", {"format": "binary"}
 
     def _is_image_fast(self, data: bytes) -> bool:
-        """Optimized image signature detection."""
+        """Optimized image signature detection.
+
+        Checks ``data``'s leading bytes against known magic numbers for
+        PNG, JPEG, WEBP, BMP, and GIF.
+
+        Args:
+            data: Raw bytes to inspect.
+
+        Returns:
+            bool: True if ``data`` looks like a supported image format.
+        """
         if len(data) < 12:
             return False
 
@@ -666,7 +912,28 @@ class TopicReaderHandler:
         return False
 
     def _read_file_topic(self, topic: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
-        """Read file topic (log file or image directory)."""
+        """Read file topic (log file or image directory).
+
+        Behavior depends on whether ``topic["file_pattern"]`` is set:
+
+        * If set, ``topic["name"]`` is treated as a directory and
+          ``file_pattern`` (e.g. ``"*.jpg"``) is globbed inside it; the 3
+          most recently matched files are copied to the temp directory and
+          returned as ``"image"`` items.
+        * If not set, ``topic["name"]`` is treated as a text log file path;
+          up to the last 4096 bytes of the file are read (to avoid loading
+          huge logs) and returned as a single ``"text"`` item.
+
+        Args:
+            topic: The file topic's configuration dict, expected to include
+                ``name`` and optionally ``file_pattern`` and
+                ``analysis_hints``.
+
+        Returns:
+            Optional[list]: A list of normalized topic items, or ``None``
+            if the topic has no name, the log file doesn't exist, no files
+            matched the pattern, or reading failed.
+        """
         name = topic.get("name")
         pattern = topic.get("file_pattern")
         if not name:
@@ -715,14 +982,36 @@ class TopicReaderHandler:
                 return None
 
     def _save_base64_image(self, b64: str) -> str:
-        """Optimized base64 image decoding and saving."""
+        """Optimized base64 image decoding and saving.
+
+        Strips a leading ``data:...,`` URI prefix if present, decodes the
+        base64 payload, and saves it via :meth:`_save_binary_image`.
+
+        Args:
+            b64: Base64-encoded image data, optionally prefixed with a
+                ``data:`` URI header.
+
+        Returns:
+            str: Path to the saved image file.
+        """
         if "," in b64 and b64.strip().lower().startswith("data:"):
             b64 = b64.split(",", 1)[1]
 
         return self._save_binary_image(base64.b64decode(b64))
 
     def _save_binary_image(self, data: bytes) -> str:
-        """Optimized binary image saving with format detection."""
+        """Optimized binary image saving with format detection.
+
+        Inspects ``data``'s magic bytes to pick a file extension
+        (``.png``/``.webp``, defaulting to ``.jpg``) and writes it to a new
+        file under the handler's temp directory.
+
+        Args:
+            data: Raw image bytes.
+
+        Returns:
+            str: Path to the saved image file.
+        """
         ext = ".jpg"
         if data.startswith(b"\x89PNG"):
             ext = ".png"
@@ -737,7 +1026,15 @@ class TopicReaderHandler:
         return path
 
     def _copy_to_temp(self, src: str) -> str:
-        """Optimized file copy to temp directory."""
+        """Optimized file copy to temp directory.
+
+        Args:
+            src: Path to the source file to copy (its extension is
+                preserved, defaulting to ``.bin`` if it has none).
+
+        Returns:
+            str: Path to the copied file under the handler's temp directory.
+        """
         ext = os.path.splitext(src)[1] or ".bin"
         dst = self._make_temp_path("file", ext)
 
@@ -745,7 +1042,20 @@ class TopicReaderHandler:
         return dst
 
     def _make_temp_path(self, prefix: str, ext: str) -> str:
-        """Create temporary file path efficiently."""
+        """Create temporary file path efficiently.
+
+        Ensures the handler's temp directory exists, then atomically
+        reserves a new uniquely-named file within it (closing the file
+        descriptor immediately, leaving an empty file at the returned path
+        for the caller to write to).
+
+        Args:
+            prefix: Filename prefix (e.g. ``"ros_image"``).
+            ext: File extension including the leading dot (e.g. ``".jpg"``).
+
+        Returns:
+            str: Path to the newly created (empty) temp file.
+        """
         if not self.tmp_root.exists():
             self.tmp_root.mkdir(parents=True, exist_ok=True)
 

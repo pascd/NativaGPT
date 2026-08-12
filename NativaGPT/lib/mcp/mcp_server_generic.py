@@ -18,14 +18,31 @@ from mcp.server.fastmcp import FastMCP
 
 
 def get_server_name(config_path: str) -> str:
-    """Extract server name from config file path."""
+    """Derive an MCP server name from a config file's path.
+
+    Args:
+        config_path: Path to the JSON function-definitions file.
+
+    Returns:
+        A "nativa-<name>" server name derived from the file stem, with any
+        "_functions" suffix stripped and underscores turned into hyphens.
+    """
     path = Path(config_path)
     name = path.stem.replace("_functions", "").replace("_", "-")
     return f"nativa-{name}" if name else "nativa-functions"
 
 
 def load_functions(config_path: str) -> list[dict]:
-    """Load function definitions from JSON file."""
+    """Load a list of function definitions from a JSON config file.
+
+    Args:
+        config_path: Path to the JSON file containing a list of function
+            definitions.
+
+    Returns:
+        The parsed list of function definitions, or an empty list if the
+        file is missing, invalid, or does not contain a JSON list.
+    """
     try:
         with open(config_path, "r") as f:
             data = json.load(f)
@@ -37,7 +54,14 @@ def load_functions(config_path: str) -> list[dict]:
 
 
 def get_args_from_command(command: str) -> list[str]:
-    """Extract argument names from command placeholders like {topic_name}."""
+    """Extract argument names from `{placeholder}` tokens in a command template.
+
+    Args:
+        command: A command string that may contain `{arg_name}` placeholders.
+
+    Returns:
+        The list of placeholder names found, in order of appearance.
+    """
     return re.findall(r"\{(\w+)\}", command)
 
 
@@ -49,11 +73,35 @@ def create_tool_function(
     location: str,
     arg_names: list[str],
 ):
-    """Create an async tool function."""
+    """Build an async MCP tool callable that runs a shell/ROS command template.
+
+    The returned function fills `{placeholder}` values in `command` from the
+    arguments it receives at call time (or appends them verbatim if the
+    command has no placeholders), optionally `cd`s into `location` first,
+    and executes the result as a shell command - directly for "shell", or
+    after sourcing the corresponding ROS 1/ROS 2 setup script for
+    "ros"/"ros2" execution types.
+
+    Args:
+        name: Tool name (informational only; not used in the function body).
+        description: Tool description (informational only; not used in the
+            function body).
+        command: Command template, possibly containing `{arg_name}`
+            placeholders.
+        execution: Execution mode - "shell", "ros", or "ros2".
+        location: Optional working directory to `cd` into before running
+            the command.
+        arg_names: Names of the placeholders present in `command`, in
+            order.
+
+    Returns:
+        An async callable `tool_impl(args) -> str` suitable for registration
+        as an MCP tool.
+    """
     has_placeholders = bool(arg_names)
 
     async def tool_impl(args: Any = None) -> str:
-        """Execute the command and return output."""
+        """Run the templated command with `args` substituted in and return its output."""
         try:
             cmd = command
 
@@ -142,7 +190,16 @@ def create_tool_function(
     return tool_impl
 
 def sanitize_tool_name(name: str) -> str:
-    """Sanitize tool name to conform to MCP standard."""
+    """Sanitize a function name into a valid MCP tool identifier.
+
+    Args:
+        name: The raw function name.
+
+    Returns:
+        A lowercase name containing only letters, digits, underscores,
+        hyphens, and dots, with no leading/trailing or repeated
+        underscores.
+    """
     # Replace invalid characters with underscore
     sanitized = re.sub(r'[^A-Za-z0-9_\-\.]', '_', name)
     # Remove multiple consecutive underscores
@@ -152,7 +209,18 @@ def sanitize_tool_name(name: str) -> str:
     return sanitized.lower()
 
 def create_server(config_path: str) -> FastMCP:
-    """Create MCP server from JSON config."""
+    """Build a FastMCP server whose tools are generated from a JSON config file.
+
+    Args:
+        config_path: Path to a JSON file containing a list of function
+            definitions (each with name/description/command/execution/
+            location).
+
+    Returns:
+        A FastMCP server instance with one tool registered per successfully
+        parsed function definition; definitions that fail to register are
+        skipped with a logged warning.
+    """
     server_name = get_server_name(config_path)
     mcp = FastMCP(server_name)
 
@@ -207,9 +275,9 @@ def create_server(config_path: str) -> FastMCP:
 
 
 def main():
-    """Main entry point."""
+    """CLI entry point: load a function-definitions JSON file (from argv or a default path) and run the MCP server over stdio."""
     if len(sys.argv) < 2:
-        config_dir = Path("/home/pedro/Documents/git-repos/NativaGPT/config/functions")
+        config_dir = Path(__file__).resolve().parents[3] / "config" / "functions"
         if config_dir.exists():
             json_files = list(config_dir.glob("*_functions.json"))
             if json_files:

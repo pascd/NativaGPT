@@ -1,3 +1,11 @@
+"""MCP client for NativaGPT.
+
+Connects to one or more Model Context Protocol (MCP) servers, asks the
+configured LLM to plan whether to answer directly or invoke a tool, executes
+the chosen tool, and drives a self-correcting retry loop that verifies
+answers and extracts images from tool output for multimodal follow-up.
+"""
+
 import asyncio
 import json
 import os
@@ -16,17 +24,24 @@ load_dotenv()
 
 
 class MCPClient:
-    """
-    Enhanced MCP Client v2.0
+    """Client that connects to one or more MCP servers and drives an LLM-based tool-use loop.
 
-    Key features:
-    - Multi-server support
-    - Automatic image attachment from tool outputs
-    - Better error handling
-    - ROS command execution support
+    Maintains sessions to multiple MCP servers, asks the configured LLM
+    handler to plan whether to answer directly or call a tool, executes the
+    chosen tool, extracts any images referenced in the tool output for
+    multimodal follow-up, and retries with self-correction when a tool call
+    fails or the LLM's answer doesn't verifiably satisfy the original
+    request.
     """
 
     def __init__(self, llm_handler: Optional[LLMPromptHandler] = None):
+        """Initialize the client with no server connections yet.
+
+        Args:
+            llm_handler: Handler used to send prompts (and images) to the
+                underlying LLM. If omitted, methods that need it return an
+                error string instead of raising.
+        """
         # Store multiple server sessions
         self.servers: List[Dict[str, Any]] = []
         self.exit_stack = AsyncExitStack()
@@ -35,7 +50,22 @@ class MCPClient:
         logger.info("MCP Client initialized with NativaGPT LLM handler")
 
     async def connect_to_server(self, server_script_list: List[str]):
-        """Connect to multiple MCP servers (python or node)."""
+        """Launch and connect to each MCP server script, registering its tools.
+
+        For every script, spawns the appropriate interpreter (bash/python
+        via `sys.executable`/node) as an MCP stdio subprocess, forwarding the
+        current environment (including ROS variables) so ROS-based servers
+        work correctly. Scripts that don't exist or have an unsupported
+        extension are skipped with a logged warning/error; a server that
+        fails to connect is likewise skipped and does not abort the rest.
+
+        Args:
+            server_script_list: Paths to MCP server scripts (.py, .js, or
+                .sh).
+
+        Raises:
+            RuntimeError: If none of the given servers could be connected.
+        """
 
         for server_script_path in server_script_list:
             # Validate file exists
@@ -137,14 +167,14 @@ class MCPClient:
         logger.info(f"\nTotal servers: {len(self.servers)}, Total tools: {total_tools}")
 
     def _get_all_tools(self) -> List[Any]:
-        """Get flattened list of all tools from all servers."""
+        """Return a flattened list of tools from every connected server."""
         all_tools = []
         for server in self.servers:
             all_tools.extend(server["tools"])
         return all_tools
 
     def _find_tool_server(self, tool_name: str) -> Optional[Dict[str, Any]]:
-        """Find which server has the specified tool."""
+        """Return the server dict exposing `tool_name`, or None if not found."""
         for server in self.servers:
             for tool in server["tools"]:
                 if tool.name == tool_name:
@@ -157,9 +187,7 @@ class MCPClient:
         images: Optional[List[str]] = None,
         system_instruction: Optional[str] = None,
     ) -> str:
-        """
-        Call NativaGPT's LLM handler. Supports system prompt override.
-        """
+        """Flatten a chat-style message list into one prompt and send it to the LLM handler."""
         try:
             prompt_parts = []
             for msg in messages:
@@ -202,7 +230,7 @@ class MCPClient:
 
     @staticmethod
     def _extract_tool_text(result: Any) -> str:
-        """Turn an MCP call_tool result into readable text."""
+        """Join the text content items of an MCP call_tool result into one string."""
         try:
             if hasattr(result, "content") and result.content:
                 parts = []
@@ -220,9 +248,12 @@ class MCPClient:
             return "No result"
 
     def _extract_images_from_tool_output(self, tool_output: str) -> List[str]:
-        """
-        Extract image paths from tool output.
-        Looks for JSON with 'image_path' or common image file paths.
+        """Extract existing image file paths from tool output.
+
+        Tries to parse the output as JSON and read an `image_path` or
+        `files` field first; if it isn't JSON, falls back to regex-matching
+        image file paths in the raw text. Only paths that exist on disk are
+        returned.
         """
         images = []
 
@@ -260,7 +291,7 @@ class MCPClient:
 
     @staticmethod
     def _is_image_file(path: str) -> bool:
-        """Check if file is an image based on extension."""
+        """Return True if `path`'s extension matches a known image format."""
         image_extensions = {
             ".jpg",
             ".jpeg",
@@ -275,7 +306,7 @@ class MCPClient:
         return ext in image_extensions
 
     def _build_tool_spec_prompt(self) -> str:
-        """Build a JSON description of all tools from all servers for the LLM."""
+        """Build the system prompt listing all tools and the expected JSON plan format."""
         tools_info = []
         all_tools = self._get_all_tools()
 
@@ -333,14 +364,30 @@ Response: {{"action": "final_answer", "answer": "The image shows a robotic arm w
     async def process_query(
         self, query: str, max_correction_iterations: int = 3
     ) -> str:
-        """
-        Process user query with automatic tool selection, image attachment, and self-healing.
+        """Answer a query by planning and possibly executing an MCP tool, retrying with self-correction on failure.
 
-        Features:
-        - Automatic tool selection
-        - Image extraction from tool outputs
-        - Self-healing: When a tool fails, the LLM analyzes the error and suggests fixes
-        - Retry loop: Continues until the user's request is fulfilled or max iterations reached
+        Each iteration asks the LLM to produce a JSON plan (`final_answer`
+        or `call_tool`) given the available tools, then either returns the
+        direct answer or invokes the chosen tool on whichever connected
+        server exposes it. Tool output is inspected for images (which are
+        then described by the LLM using vision input) and for error
+        indicators; on iterations after the first, generated answers are
+        also checked against the original query via an LLM-based
+        verification pass. Whenever a plan is malformed, a tool is missing,
+        a tool call raises, or verification fails, the loop builds a
+        correction prompt describing the previous failure and retries, up
+        to `max_correction_iterations` times.
+
+        Args:
+            query: The user's natural-language request.
+            max_correction_iterations: Maximum number of plan/execute/verify
+                attempts before giving up.
+
+        Returns:
+            The final natural-language answer, or a message describing why
+            the request could not be fulfilled after exhausting all
+            iterations. Failures are returned as strings rather than
+            raised.
         """
         logger.info(f"MCP process_query ENTRY - query: {query[:100]}...")
 
@@ -649,7 +696,7 @@ and suggest what might need to be fixed.
         )
 
     def _check_tool_error(self, tool_output: str, tool_name: str) -> tuple[bool, str]:
-        """Check if tool output indicates an error condition. Returns (is_error, reason)."""
+        """Heuristically detect an error in tool output via keyword matching; returns (is_error, reason)."""
         output_lower = tool_output.lower().strip()
 
         # Check for explicit error indicators
@@ -695,7 +742,7 @@ and suggest what might need to be fixed.
         return False, ""
 
     def _verify_answer_fulfills_request(self, original_query: str, answer: str) -> dict:
-        """Verify if the answer actually fulfills the user's request."""
+        """Ask the LLM whether `answer` fulfills `original_query`; returns a fulfilled/reason/confidence dict (defaults to fulfilled=True if verification itself fails)."""
         try:
             if not self.llm_handler:
                 return {
@@ -755,7 +802,7 @@ Respond with ONLY a JSON object (no other text):
     def _build_correction_query(
         self, original_query: str, last_error: str, last_answer: str, verification: dict
     ) -> str:
-        """Build a query to ask the LLM to correct the previous attempt."""
+        """Build a follow-up prompt asking the LLM to analyze the previous failure and produce a corrected JSON plan."""
         last_answer_preview = (
             last_answer[:500] if last_answer else "No answer generated"
         )
@@ -790,7 +837,7 @@ Think about:
 
     @staticmethod
     def _parse_plan_json(plan_raw: str):
-        """Parse the model's plan as JSON, handling code blocks."""
+        """Parse the model's plan as JSON, stripping markdown code fences first."""
         plan_raw = plan_raw.strip()
 
         # Remove markdown code blocks
@@ -810,11 +857,7 @@ Think about:
         return json.loads(json_str)
 
     def _extract_json_plan(self, plan_raw: str):
-        """
-        Extract a valid JSON plan from LLM response.
-        Returns the parsed plan dict or None if no valid plan found.
-        Handles curly quotes and embedded JSON in text.
-        """
+        """Extract a JSON plan dict from a raw LLM response, tolerating code fences and curly quotes; returns None if none found."""
         try:
             # First try direct parsing
             return self._parse_plan_json(plan_raw)
@@ -891,9 +934,14 @@ Think about:
             return None
 
     def _force_execute_json_plan(self, response_text: str):
-        """
-        Force execution of any JSON plan found in the response text.
-        This is a last resort to execute plans that the LLM returns but aren't properly extracted.
+        """Scan the response for any balanced {...} block that parses as a valid call_tool/final_answer plan.
+
+        Last-resort fallback used when normal extraction fails to isolate a
+        plan; attempts simple fixes (trailing commas, smart quotes) before
+        giving up on a block.
+
+        Returns:
+            The first valid plan dict found, or None if none did.
         """
         try:
             # Look for JSON blocks and execute them directly
@@ -974,7 +1022,7 @@ Think about:
             return None
 
     async def cleanup(self):
-        """Cleanup resources."""
+        """Close all MCP server sessions/subprocesses and clean up the LLM handler."""
         logger.info("Cleaning up MCP client...")
         await self.exit_stack.aclose()
         if self.llm_handler:
@@ -982,7 +1030,7 @@ Think about:
 
 
 async def main():
-    """Test the MCP client."""
+    """Manual smoke test: connect to servers given as CLI args and run sample queries through process_query."""
     if len(sys.argv) < 2:
         print("Usage: python mcp_client.py <server_script1> [server_script2] ...")
         sys.exit(1)

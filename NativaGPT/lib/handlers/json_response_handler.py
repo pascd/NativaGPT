@@ -1,3 +1,11 @@
+"""Normalization and formatting of JSON command payloads from LLM responses.
+
+Provides :class:`JsonResponseHandler`, which normalizes the many possible
+shapes an LLM-emitted command JSON object can take (varying field names and
+nesting) into a consistent ``{"command", "execution", "location"}``
+structure, and prepares them for execution/display.
+"""
+
 import os
 import json
 import sys
@@ -6,6 +14,19 @@ from NativaGPT.lib.coloring_logger import logger
 
 
 class JsonResponseHandler:
+    """Normalizes and validates JSON command payloads extracted from LLM responses.
+
+    Accepts command JSON in a variety of shapes and field-naming
+    conventions and converts them into a consistent structure of
+    ``command``, ``execution``, and ``location`` fields, ready to be
+    executed or displayed.
+
+    Attributes:
+        execution_list: Indicative mapping of known execution/executor
+            names (e.g. ``"shell"``, ``"python"``, ``"ros2 launch"``) to an
+            optional command prefix. Not currently used to prefix commands.
+    """
+
     # Mapeamento conhecido (apenas indicativo; hoje não é necessário prefixar executores)
     execution_list = {
         "shell": "",
@@ -20,16 +41,27 @@ class JsonResponseHandler:
     }
 
     def __init__(self):
+        """Initialize the handler and log its creation."""
         logger.info("Created JsonResponseHandler instance.")
 
     def _normalize_function_object(self, fn_obj):
-        """
+        """Unwrap a nested command object into a flat command dict.
+
         Enhanced normalization that accepts multiple command structures:
           {'command': '...', 'execution': 'shell', 'location': '/tmp'}
           {'function': {'command': '...', ...}}
           {'action': '...', 'type': 'shell', 'path': '/tmp'}
           {'tool': '...', 'method': 'shell', 'directory': '/tmp'}
           {'call': '...', 'executor': 'shell', 'working_dir': '/tmp'}
+
+        Args:
+            fn_obj: The candidate command object (typically a dict, but
+                passed through unchanged for other types).
+
+        Returns:
+            The unwrapped ``dict`` (e.g. the value of a nested
+            ``"function"``/``"action"``/``"tool"``/``"call"`` key) if one
+            was found, otherwise ``fn_obj`` unchanged.
         """
         if isinstance(fn_obj, dict):
             # Handle nested function structure
@@ -51,9 +83,23 @@ class JsonResponseHandler:
         return fn_obj
 
     def _normalize_field_names(self, function_data):
-        """
-        Normalize various field names to standard format.
-        Handles multiple naming conventions for command fields.
+        """Normalize various field names to standard format.
+
+        Handles multiple naming conventions for command fields, mapping
+        aliases such as ``cmd``/``action``/``tool``/``call``/``execute``/
+        ``run`` to ``"command"``, ``executor``/``type``/``method``/
+        ``shell``/``runtime`` to ``"execution"``, and
+        ``path``/``directory``/``dir``/``working_dir``/``folder`` to
+        ``"location"`` (case-insensitive). Existing standard fields are
+        left untouched.
+
+        Args:
+            function_data: The command dict whose field names should be
+                normalized. Non-dict input is returned unchanged.
+
+        Returns:
+            A copy of ``function_data`` with standard field names added
+            where a recognized alias was found.
         """
         if not isinstance(function_data, dict):
             return function_data
@@ -97,9 +143,19 @@ class JsonResponseHandler:
         return normalized
 
     def _format_with_location(self, command: str, location: str) -> str:
-        """
+        """Prefix a command with a directory change when a location is given.
+
         'location' representa directório de execução.
         Para garantir portabilidade, prefixamos 'cd <dir> && <command>' quando location existir.
+
+        Args:
+            command: The command string to run.
+            location: The working directory the command should run in, or
+                empty/``None`` if not applicable.
+
+        Returns:
+            str: ``command`` unchanged if ``location`` is empty or ``command``
+            already starts with ``"cd "``, otherwise ``"cd <location> && <command>"``.
         """
         location = (location or "").strip()
         if not location:
@@ -111,6 +167,25 @@ class JsonResponseHandler:
 
     # Return all functions and executions for each one
     def check_all_functions(self, response):
+        """Normalize and validate all command JSON strings in a response.
+
+        Iterates over the JSON strings/dicts in ``response``, normalizes
+        each one's structure and field names, fills in default
+        ``execution`` (``"shell"``) and ``location`` (``""``) values when
+        missing, and splits ``&&``-joined command sequences into separate
+        entries. Items missing the ``command`` field (after defaulting) are
+        skipped and logged as errors.
+
+        Args:
+            response: Either a list of JSON strings/dicts, or a dict
+                containing a ``"json_strings"`` key with such a list.
+
+        Returns:
+            list: A list of normalized command dicts, each with
+            ``"command"``, ``"execution"``, ``"location"``, ``"raw_data"``,
+            and ``"is_sequence"`` keys. Returns an empty list on error or if
+            the response format is unrecognized.
+        """
         try:
             logger.debug(f"Response type: {type(response)}")
             logger.debug(f"Response content: {response}")
@@ -230,7 +305,17 @@ class JsonResponseHandler:
             return []
 
     def get_function_command(self, functions):
-        """Devolve lista de strings de comando executáveis (shell)."""
+        """Devolve lista de strings de comando executáveis (shell).
+
+        Args:
+            functions: List of normalized command dicts (as returned by
+                :meth:`check_all_functions`), each expected to have a
+                ``"command"`` key and optionally ``"execution"``.
+
+        Returns:
+            list: A list of executable command strings (empty list on
+            error or if ``functions`` is falsy).
+        """
         try:
             commands_list = []
             if functions:
@@ -248,6 +333,19 @@ class JsonResponseHandler:
             return []
 
     def parse_command_output(self, output):
+        """Format a command's output as a human-readable, unescaped string.
+
+        Serializes ``output`` to indented JSON, then decodes unicode
+        escape sequences (e.g. turning literal ``\\n`` into real newlines)
+        and strips a surrounding pair of quotes if present.
+
+        Args:
+            output: The value to format (typically a command's raw output,
+                which may be a string, dict, list, etc.).
+
+        Returns:
+            str: The formatted, unescaped output string.
+        """
         json_string = json.dumps(output, indent=2)
         formatted_output = json_string.encode("utf-8").decode("unicode_escape")
         if formatted_output.startswith('"') and formatted_output.endswith('"'):

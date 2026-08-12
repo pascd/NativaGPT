@@ -1,9 +1,33 @@
+"""Lightweight ANSI-colored console logger.
+
+Provides ``ColoredLogger``, a minimal logger that timestamps messages and
+colors them by severity level when the output stream is a color-capable
+terminal, plus a ready-to-use module-level ``logger`` instance and a
+``get_logger(name)`` factory for creating additional named instances.
+"""
+
 import sys
 import os
 from datetime import datetime
 import inspect
 
 class ColoredLogger:
+    """Minimal logger that timestamps and color-codes messages by level.
+
+    Messages are printed directly with ``print`` (no ``logging`` module
+    involved). When stdout is a terminal that appears to support ANSI
+    colors, each severity level is rendered in its own color; otherwise
+    plain text is used.
+
+    Attributes:
+        name (str): Logical name of the logger, typically the calling
+            module's ``__name__`` when not explicitly provided.
+        use_colors (bool): Whether ANSI color codes are emitted, based on
+            the detected terminal capabilities.
+        COLORS (dict): Class-level mapping of level name (and ``'RESET'``)
+            to ANSI escape codes.
+    """
+
     # ANSI color codes
     COLORS = {
         'DEBUG': '\033[36m',     # Cyan
@@ -15,6 +39,13 @@ class ColoredLogger:
     }
 
     def __init__(self, name=None):
+        """Initializes the logger.
+
+        Args:
+            name: Logical name for the logger. If ``None``, the name is
+                inferred from the ``__name__`` of the calling module's
+                globals (falling back to ``'unknown'``).
+        """
         if name is None:
             # Get the name of the calling module
             frame = inspect.currentframe().f_back
@@ -61,21 +92,57 @@ class ColoredLogger:
 
     # === MÉTODOS PÚBLICOS ADAPTADOS ===
     def debug(self, message, file=sys.stdout):
+        """Logs a message at DEBUG level.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stdout``.
+        """
         self._log("DEBUG", str(message), file)
 
     def info(self, message, file=sys.stdout):
+        """Logs a message at INFO level.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stdout``.
+        """
         self._log("INFO", str(message), file)
 
     def warning(self, message, file=sys.stdout):
+        """Logs a message at WARNING level.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stdout``.
+        """
         self._log("WARNING", str(message), file)
 
     def warn(self, message, file=sys.stdout):  # Alias for warning
+        """Alias for :meth:`warning`.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stdout``.
+        """
         self.warning(message, file)
 
     def error(self, message, file=sys.stderr): # ERRO por padrão vai para stderr
+        """Logs a message at ERROR level.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stderr``.
+        """
         self._log("ERROR", str(message), file)
 
     def critical(self, message, file=sys.stderr): # CRITICAL por padrão vai para stderr
+        """Logs a message at CRITICAL level.
+
+        Args:
+            message: Message to log (converted to ``str``).
+            file: Output stream to write to. Defaults to ``sys.stderr``.
+        """
         self._log("CRITICAL", str(message), file)
 
 # Create a default logger instance that can be imported directly
@@ -83,4 +150,12 @@ logger = ColoredLogger()
 
 # Also provide a function to create named loggers if needed
 def get_logger(name):
+    """Creates a new named :class:`ColoredLogger` instance.
+
+    Args:
+        name: Logical name to associate with the returned logger.
+
+    Returns:
+        ColoredLogger: A new logger instance using the given name.
+    """
     return ColoredLogger(name)

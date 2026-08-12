@@ -1,3 +1,13 @@
+"""RAG (retrieval-augmented) similarity search over the tool/function database.
+
+Provides :class:`RAGSimilarityCheck`, which loads JSON/text entries from a
+configured "functions" folder, embeds them via a local Ollama embedding
+model, and retrieves the most semantically similar entries to a query
+using cosine similarity. Also provides `convert_json_to_toon`, a helper
+that renders a "function" JSON tool definition as a compact,
+LLM-friendly Token Object Oriented Notation (TOON) string.
+"""
+
 import os
 import sys
 import json
@@ -10,8 +20,25 @@ from NativaGPT.lib.config_manager import ConfigManager
 from NativaGPT.lib.coloring_logger import logger
 
 class RAGSimilarityCheck():
+    """Embeds and searches a local database of function/tool JSON definitions.
+
+    On construction, ensures the configured Ollama embedding model is
+    available locally (downloading it if necessary), loads every file
+    under `database_folder` (JSON files are parsed into one or more
+    entries; other files are read as newline-separated text entries),
+    and computes an embedding for each entry to build an in-memory
+    vector database. Queries are answered by embedding the query text
+    and ranking stored entries by cosine similarity.
+    """
 
     def __init__(self, config):
+        """Initializes the RAG database: ensures the embedding model is available and builds the index.
+
+        Args:
+            config: The application configuration dict (as returned by
+                `ConfigManager.get()`); must contain
+                `config["nativa_gpt"]["embedding_model"]`.
+        """
         self.config = config
         self.loaded_entries = []
         self.vector_db = []
@@ -40,7 +67,7 @@ class RAGSimilarityCheck():
             self._download_model()
 
     def _download_model(self):
-        """Download the embedding model."""
+        """Downloads the embedding model via `ollama.pull`, re-raising on failure."""
         try:
             logger.info(f"Downloading embedding model: {self.embedding_model}")
             logger.info("This may take a few minutes...")
@@ -60,6 +87,20 @@ class RAGSimilarityCheck():
             return False
 
     def read_database_files(self):
+        """Loads all entries from `self.database_folder` into `self.loaded_entries`.
+
+        Walks the folder recursively. JSON files are parsed and their
+        contents (a list of entries, or a single entry) are appended to
+        `self.loaded_entries`; any other file is read as
+        newline-separated plain text entries (blank lines are skipped).
+        Logs progress via `logger.info`.
+
+        Returns:
+            bool: True if the folder exists and every file was read
+            successfully. False if the folder doesn't exist, or a file
+            could not be parsed/read (loading stops early in that case,
+            without raising).
+        """
         self.loaded_entries = []
         if not os.path.exists(self.database_folder):
             logger.warning(f"Database folder '{self.database_folder}' does not exist.")
@@ -92,7 +133,17 @@ class RAGSimilarityCheck():
         return True
 
     def add_chunks_to_database(self):
-        """Add entries to the vector database with embeddings."""
+        """Embeds every entry in `self.loaded_entries` and appends it to `self.vector_db`.
+
+        For each entry, extracts searchable text (via
+        `_extract_searchable_text` for dicts, or `str()` otherwise),
+        generates its embedding via `ollama.embed`, and appends
+        `(entry, embedding, searchable_text)` to `self.vector_db`. Does
+        nothing if `self.loaded_entries` is empty or a quick embedding
+        model test (`_test_model_embedding`) fails. Individual entry
+        failures are logged and skipped rather than raised. Logs
+        progress every 10 entries.
+        """
         if not self.loaded_entries:
             logger.warning("No entries to add to database.")
             return
@@ -117,7 +168,13 @@ class RAGSimilarityCheck():
                 continue
 
     def _extract_searchable_text(self, json_obj: dict) -> str:
-        """Extract searchable text from JSON object"""
+        """Recursively flattens a JSON object into a single space-joined string of its text.
+
+        Special-cases the `{"function": {...}}` tool shape by pulling
+        just `name`, `description`, and `command`; otherwise
+        concatenates every string value found in the dict, recursing
+        into nested dicts and lists.
+        """
         if isinstance(json_obj, dict):
             if 'function' in json_obj:
                 func = json_obj['function']
@@ -146,7 +203,13 @@ class RAGSimilarityCheck():
             return str(json_obj)
 
     def _get_cosine_similarity(self, a: List[float], b: List[float]) -> float:
-        """Calculate cosine similarity between two vectors."""
+        """Calculates cosine similarity between two equal-length vectors.
+
+        Returns 0.0 if either vector has zero magnitude.
+
+        Raises:
+            ValueError: If `a` and `b` have different lengths.
+        """
         if len(a) != len(b):
             raise ValueError("Vectors must have the same length")
         dot_product = sum(x * y for x, y in zip(a, b))
@@ -157,7 +220,24 @@ class RAGSimilarityCheck():
         return dot_product / (norm_a * norm_b)
 
     def retrieve(self, query: str, top_n: int = 3) -> List[Tuple[Any, float, str]]:
-        """Retrieve the most similar entries to the query."""
+        """Finds the entries most similar to `query` by cosine similarity of their embeddings.
+
+        Embeds `query` via Ollama, computes cosine similarity against
+        every stored embedding in `self.vector_db`, and returns the
+        `top_n` highest-scoring entries. For each entry considered, also
+        logs a debug rendering (original JSON plus a TOON conversion for
+        dict entries, or the raw text otherwise).
+
+        Args:
+            query: The natural-language query to search for.
+            top_n: Maximum number of results to return.
+
+        Returns:
+            List[Tuple[Any, float, str]]: Up to `top_n` tuples of
+            `(entry, similarity, searchable_text)`, sorted by descending
+            similarity. Returns an empty list if the vector database is
+            empty or the query embedding could not be generated.
+        """
         if not self.vector_db:
             logger.warning("Vector database is empty. No entries to retrieve.")
             return []
@@ -180,7 +260,7 @@ class RAGSimilarityCheck():
                         logger.info(line)
 
                     logger.info('\n--- TOON CONVERSION ---')
-                    entry = convert_json_to_toon(entry)
+                    toon_output = convert_json_to_toon(entry)
                     for line in toon_output.splitlines():
                         logger.info(line)
                 else:
@@ -197,7 +277,12 @@ class RAGSimilarityCheck():
         return similarities[:top_n]
 
     def get_stats(self) -> dict:
-        """Get statistics about the RAG database."""
+        """Returns basic statistics about the loaded entries and vector database.
+
+        Returns:
+            dict: A dict with `total_entries`, `vector_db_size`,
+            `embedding_model`, and `database_folder`.
+        """
         return {
             "total_entries": len(self.loaded_entries),
             "vector_db_size": len(self.vector_db),
@@ -206,9 +291,23 @@ class RAGSimilarityCheck():
         }
 
 def convert_json_to_toon(data: dict) -> str:
-    """
-    Converts a function JSON object (as used in your RAG)
-    to Token Object Oriented Notation (TOON).
+    """Renders a "function" JSON tool definition as a Token Object Oriented Notation (TOON) string.
+
+    Produces a compact, indented, class-instantiation-like
+    representation of a `{"function": {...}}` tool definition (name,
+    description, command, parameters, and required fields), intended as
+    a more token-efficient alternative to pretty-printed JSON when shown
+    to an LLM.
+
+    Args:
+        data: A dict expected to contain a `"function"` key whose value
+            is itself a dict with `name`, `description`, `command`, and
+            `parameters` sub-fields.
+
+    Returns:
+        str: The TOON-formatted string, or, if `data` doesn't have the
+        expected `"function"` shape, a fallback string containing a raw
+        JSON dump prefixed with a note that it wasn't a function JSON.
     """
 
     # Check if this is the function format we expect
@@ -258,8 +357,8 @@ def convert_json_to_toon(data: dict) -> str:
     return "\n".join(toon)
 
 if __name__ == "__main__":
-    # Example config path, update as needed
-    config_path = "/home/pedrodias/Documents/git-repos/NativaGPT/config/config_default.json"
+    # Default config path, resolved relative to this file's location.
+    config_path = str(pathlib.Path(__file__).resolve().parent.parent.parent / "config" / "config_default.json")
 
     # Check if config file exists
     if not os.path.exists(config_path):

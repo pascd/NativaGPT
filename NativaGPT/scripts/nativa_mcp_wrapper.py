@@ -1,3 +1,15 @@
+"""Synchronous wrapper around the MCP client stack with conversation memory.
+
+Provides ``NativaMCPWrapper``, a single-object facade that connects to one
+or more MCP servers (both statically configured ones and dynamically
+spawned "generic" servers backed by function-definition JSON files),
+asks the LLM to decide whether to call a tool or answer directly, executes
+the chosen tool if any, and keeps a rolling history of the conversation for
+context in subsequent turns. Unlike the async ``MCPClient``, all public
+entry points here (``ask``) are synchronous, making the wrapper convenient
+to embed in non-async callers such as a Flask REST API (see
+``nativa_restAPI.py``).
+"""
 import asyncio
 import json
 import os
@@ -17,6 +29,17 @@ from NativaGPT.lib.config_manager import ConfigManager
 
 
 class NativaMCPWrapper:
+    """Synchronous, memory-aware facade over one or more MCP tool servers.
+
+    On construction, loads MCP server definitions from config (plus any
+    extra servers/JSON paths passed in), optionally connects to all of them
+    right away, and exposes ``ask()`` as a single synchronous entry point
+    that: gathers the currently available tools, asks the LLM (via
+    ``LLMPromptHandler``) whether to call a tool or answer directly,
+    executes the tool if requested, and records the exchange in a bounded
+    conversation history used as context for future calls.
+    """
+
     def __init__(
         self,
         config_path: str = "config/config_default.json",
@@ -202,7 +225,21 @@ class NativaMCPWrapper:
             print(f"[MCP] ✗ Failed to start {name}: {e}", file=sys.stderr)
 
     def ask(self, query: str) -> Dict[str, Any]:
-        """Entry point for HMI calls. Returns both tools and response."""
+        """Synchronous entry point for a single conversational turn.
+
+        Runs the async ``_process`` pipeline to completion on an event
+        loop (reusing the current one if available, otherwise creating a
+        new one), blocking until a result is ready. Intended for use by
+        synchronous callers such as an HMI or a Flask route handler.
+
+        Args:
+            query: The user's message/query text.
+
+        Returns:
+            A dict with keys ``tools_called`` (list of tool invocations
+            made while answering), ``response`` (the final text answer),
+            and ``raw_result`` (the raw tool result, if any).
+        """
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -211,6 +248,22 @@ class NativaMCPWrapper:
         return loop.run_until_complete(self._process(query))
 
     async def _process(self, query: str) -> Dict[str, Any]:
+        """Run one full ask-the-LLM/optionally-call-a-tool turn for ``query``.
+
+        Ensures MCP servers are initialized, collects the schemas of all
+        available tools (from connected MCP sessions and any registered
+        local tools), builds a prompt containing the system role, HMI
+        status context, recent conversation history and the tool list, and
+        asks the LLM to either request a tool call or answer directly. The
+        resulting exchange is appended to ``conversation_history``.
+
+        Args:
+            query: The user's message/query text.
+
+        Returns:
+            The dict produced by ``_handle_logic`` describing what
+            happened (tools called, final response text, raw tool result).
+        """
         await self._initialize_mcp()
 
         # Gather tools from all active MCP sessions
@@ -263,6 +316,31 @@ class NativaMCPWrapper:
     async def _handle_logic(
         self, content: str, original_query: str, all_tools: List[Dict] = []
     ) -> Dict[str, Any]:
+        """Interpret the LLM's raw response and execute a tool call if requested.
+
+        Expects ``content`` to contain a JSON object shaped either as
+        ``{"tool": NAME, "args": {...}}`` (a tool-call request) or
+        ``{"answer": MESSAGE}`` (a direct answer). For a tool call, runs the
+        tool (local callable or MCP tool via ``_execute_mcp_tool``), then
+        asks the LLM to summarize the tool result into a user-facing
+        answer. Malformed/non-JSON content is caught and reported as an
+        error response rather than raising.
+
+        Args:
+            content: The LLM's raw text response, possibly wrapped in a
+                markdown code fence and/or containing extra text around
+                the JSON payload.
+            original_query: The original user query, used to build the
+                tool-result summarization prompt.
+            all_tools: The tool schemas that were offered to the LLM
+                (currently unused for validation, kept for future use).
+
+        Returns:
+            A dict with ``tools_called`` (list of ``{"name", "args"}``
+            entries), ``response`` (final text to show the user), and
+            ``raw_result`` (the tool's raw return value, or None for a
+            direct answer or on error).
+        """
         cleaned = self._clean_json(content)
         tools_called = []
 
@@ -312,6 +390,17 @@ class NativaMCPWrapper:
             }
 
     async def _execute_mcp_tool(self, tool_name: str, args: Dict):
+        """Find the MCP session hosting ``tool_name`` and invoke it.
+
+        Args:
+            tool_name: Name of the tool to call, as exposed by one of the
+                connected MCP sessions.
+            args: Keyword arguments to pass to the tool.
+
+        Returns:
+            The stringified tool result content, or a "not found" message
+            if no connected session exposes a tool with that name.
+        """
         for session in self.sessions:
             tools = await session.list_tools()
             if any(t.name == tool_name for t in tools.tools):
@@ -322,6 +411,16 @@ class NativaMCPWrapper:
         return f"Tool '{tool_name}' not found."
 
     def _clean_json(self, text: str) -> str:
+        """Strip markdown code-fence markers and surrounding text, keeping the ``{...}`` payload.
+
+        Args:
+            text: Raw LLM output that is expected to contain a JSON object.
+
+        Returns:
+            The substring from the first ``{`` to the last ``}`` with any
+            ` ```json`/` ``` ` fences removed, or ``text`` stripped as-is
+            if no braces are found.
+        """
         text = text.replace("```json", "").replace("```", "").strip()
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end != -1:
@@ -366,7 +465,12 @@ class NativaMCPWrapper:
             self.additional_json_paths.append(json_path)
 
     def get_loaded_tools_count(self) -> int:
-        """Get count of currently loaded tools (requires initialization)."""
+        """Get the number of connected MCP sessions (i.e. running servers).
+
+        Returns:
+            0 if MCP has not been initialized yet; otherwise the number of
+            active sessions in ``self.sessions``.
+        """
         if not self._is_initialized:
             return 0
         return len(self.sessions)
@@ -376,7 +480,16 @@ class NativaMCPWrapper:
         return list(self._connected_server_names)
 
     def add_to_history(self, user_query: str, response: Dict[str, Any]):
-        """Add conversation exchange to history."""
+        """Append one user/assistant exchange to the conversation history.
+
+        Trims the history down to ``max_history_length`` most recent
+        entries after appending.
+
+        Args:
+            user_query: The user's message for this exchange.
+            response: The result dict from ``_handle_logic``/``ask``,
+                containing ``response`` and ``tools_called`` keys.
+        """
         self.conversation_history.append(
             {
                 "user": user_query,
@@ -393,7 +506,13 @@ class NativaMCPWrapper:
             ]
 
     def get_conversation_context(self) -> str:
-        """Get formatted conversation history for prompt context."""
+        """Render the conversation history as text for inclusion in an LLM prompt.
+
+        Returns:
+            "No previous conversation." if history is empty; otherwise a
+            numbered list of past exchanges, each showing the user message,
+            any tools used, and a truncated (200-char) assistant response.
+        """
         if not self.conversation_history:
             return "No previous conversation."
 
@@ -434,7 +553,16 @@ class NativaMCPWrapper:
 
     @staticmethod
     def usage_examples():
-        """Show usage examples for the flexible NativaMCPWrapper."""
+        """Print a reference listing of common ``NativaMCPWrapper`` usage patterns.
+
+        Not called anywhere in normal operation — this is a documentation
+        helper for developers/integrators. Prints (to stderr) example
+        snippets covering basic construction, custom config paths, adding
+        extra MCP servers or function JSON files (both at construction
+        time and dynamically afterwards), and conversation-memory usage.
+        Takes no arguments and returns nothing; call it directly, e.g.
+        ``NativaMCPWrapper.usage_examples()``, to view the examples.
+        """
         examples = """
         === NATIVA MCP WRAPPER USAGE EXAMPLES ===
 

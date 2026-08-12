@@ -1,30 +1,18 @@
 {
   "nativa_gpt": {
-    "active_listening_timeout": 15,
-    "user_msgs": {
-      "trigger_commands": [
-        "hey",
-        "hello",
-        "ok"
-      ],
-      "listening_msg": "Hey, I am listening.",
-      "warning_msg": "Attention: there is an warning.",
-      "error_msg": "Attention: there is an error.",
-      "greeting_msg": "Hey, I am Nativa. What are we doing today?"
-    },
-    "database_folder": "/home/pedro/Documents/uv-projects/NativaGPT/config/functions",
+    "database_folder": "${REPO_ROOT}/config/functions",
     "embedding_model": "hf.co/CompendiumLabs/bge-base-en-v1.5-gguf",
-    "audio_key": "f1",
-    "text_key": "f2",
-    "analysis_history_limit": 100,
-    "use_webgpthandler": false,
-    "webgpthandler_platform": "chatgpt",
-    "use_tts": false,
-    "use_stt": false
+    "analysis_history_limit": 100
   },
   "llm_config": {
-    "endpoint": "https://api.iaedu.pt/agent-chat//api/v1/agent/cmamvd3n40000c801qeacoad2/stream",
-    "channel_id": "cml11h1db2gvngd01dd51hqpd",
+    "base_url": "http://localhost:11434/v1",
+    "model": "deepseek-r1:latest",
+    "vision_model": "llava:latest",
+    "api_key_env": "LLM_API_KEY",
+    "temperature": 0.1,
+    "max_tokens": 2000,
+    "stream": true,
+    "timeout": 60,
     "model_config": {
       "setup_prompt": "I am Nativa, an AI assistant for robot control.\n\n## CRITICAL RULES FOR IMAGE DESCRIPTION\n\n**When an image is attached to your response:**\n- You MUST describe the image DIRECTLY in your answer\n- DO NOT call any tools to analyze the image\n- DO NOT suggest using analysis tools\n- The VLM (Vision Language Model) that processed the image is ALREADY the analysis tool\n- Just describe what you see in plain text\n\n**Example - CORRECT:**\nUser: \"Describe the camera image\"\nAnswer: \"The image shows a robotic arm with a blue gripper holding a small white box on a table.\"\n\n**Example - WRONG (do not do this):\nUser: \"Describe the camera image\"\nResponse: {\"action\": \"call_tool\", \"tool\": \"analyze_image\", ...}\n\n## TOOL USAGE\nOnly call tools when you need to:\n- Capture new images from ROS topics (use capture_camera_image)\n- Execute ROS commands (list_topics, read_topic, get_topic_info, get_system_status)\n- Get weather info (get_forecast, get_alerts)\n\nWhen a tool captures an image, it will be automatically attached to your context.\nIf the user asks \"what do you see\" or \"describe this image\", provide the description directly.\n\n## RESPONSE FORMAT\n- Plain text for descriptions, conversations, and image analysis\n- JSON only for tool execution requests\n- Be concise but detailed in visual descriptions"
     }
@@ -33,72 +21,16 @@
     "enabled": true,
     "mcp_servers": {
       "weather_mcp": {
-        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server.py"
+        "host": "${REPO_ROOT}/NativaGPT/lib/mcp/mcp_server.py"
       },
       "ros1_mcp": {
-        "host": "/home/pedro/Documents/uv-projects/NativaGPT/NativaGPT/lib/mcp/mcp_server_ros.py"
+        "host": "${REPO_ROOT}/NativaGPT/lib/mcp/mcp_server_ros.py"
       }
-    }
-  },
-  "stt_config": {
-    "target_sample_rate": 16000,
-    "api_url": "http://localhost:8030/transcribe",
-    "headers": {
-      "Content-Type": "application/json"
-    },
-    "prompt": {
-      "audio": "{audio}"
-    },
-    "audio_capture_config": {
-      "target_sample_rate": 16000,
-      "chunk_duration": 0.1,
-      "volume_threshold": 0.01,
-      "silence_timeout": 1.5,
-      "pre_padding": 0.5
-    },
-    "robot_commands": {
-      "enabled": true,
-      "confidence_threshold": 0.8,
-      "safety_confirmation": true
-    },
-    "rest_api": {
-      "model_id": "openai/whisper-small",
-      "target_sample_rate": 16000,
-      "chunk_duration": 3,
-      "volume_threshold": 0.01
-    }
-  },
-  "tts_config": {
-    "speaker_config": {
-      "speakers_url": "http://localhost:8020/set_speaker_folder/",
-      "prompt": {
-        "speaker_folder": "/home/pedrodias/Documents/git-repos/xtts-api-server/speakers"
-      }
-    },
-    "output_config": {
-      "output_url": "http://localhost:8020/set_output/",
-      "prompt": {
-        "output_folder": "/home/pedrodias/Documents/git-repos/xtts-api-server/output"
-      }
-    },
-    "api_url": "http://localhost:8020/tts_to_audio/",
-    "headers": {
-      "Content-Type": "application/json"
-    },
-    "prompt": {
-      "text": "{text}",
-      "speaker_wav": "female.wav",
-      "language": "en"
-    },
-    "robot_feedback": {
-      "enabled": true,
-      "action_confirmation": true,
-      "error_reporting": true
     }
   },
   "logging": {
     "level": "INFO",
-    "log_directory": "/home/pedrodias/Documents/git-repos/NativaGPT/logs",
+    "log_directory": "${REPO_ROOT}/logs",
     "log_rotation": true
   }
 }

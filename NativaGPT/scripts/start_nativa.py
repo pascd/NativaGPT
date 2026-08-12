@@ -1,3 +1,11 @@
+"""Launcher that starts NativaGPT's dependent services and then the app itself.
+
+Defines ``EnhancedNativaGPTStarter``, which orchestrates bringing up the
+services NativaGPT relies on (an LLM/VLM backend) before constructing and
+running a ``NativaGPT`` instance. Each dependent service is launched as its
+own subprocess, with port-based checks used throughout to verify what is
+already running and what actually came up.
+"""
 from NativaGPT.lib.config_manager import ConfigManager
 from NativaGPT.scripts.nativa import NativaGPT
 
@@ -10,11 +18,23 @@ import os
 import json
 import requests
 import socket
+from pathlib import Path
 
-CONFIG_MANAGER_FILE="/home/pedrodias/Documents/git-repos/NativaGPT/config/config_default.json"
+# Repository root, computed from this file's own location (NativaGPT/scripts/)
+# so this script works from a fresh clone without editing any paths by hand.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+CONFIG_MANAGER_FILE = str(REPO_ROOT / "config" / "config_default.json")
 
 class EnhancedNativaGPTStarter:
-    """Enhanced starter class with VLM integration and better management"""
+    """Orchestrates launching NativaGPT's dependent services, then NativaGPT itself.
+
+    Owns the lifecycle of the ``NativaGPT`` instance and of any service
+    subprocesses started on its behalf. ``start()`` is the main entry
+    point: it launches dependencies (each as its own subprocess),
+    initializes ``NativaGPT``, and runs its interactive loop, tearing
+    everything down on exit or interrupt.
+    """
 
     def __init__(self):
         self.nativa = None
@@ -23,86 +43,28 @@ class EnhancedNativaGPTStarter:
         self.vlm_services = []
 
     def launch_dependencies(self):
-        """Launch all necessary API dependencies including VLM services"""
+        """Launch the services NativaGPT depends on.
+
+        Starts each dependent service as its own subprocess via
+        ``_launch_services_individually``.
+
+        Returns:
+            True if the required services were launched (or were already
+            running) successfully; False otherwise.
+        """
         logger.info("Launching enhanced dependencies with VLM support...")
-
-        # First, try the original bash script
-        if self._try_bash_script():
-            return True
-
-        # If bash script fails, try to launch services individually
-        logger.info("Bash script failed, attempting to launch services individually...")
         return self._launch_services_individually()
 
-    def _try_bash_script(self):
-        """Try to run the original bash script with environment fixes"""
-        command = "/home/pedrodias/Documents/git-repos/NativaGPT/NativaGPT/bash/launch_all_api.sh"
-
-        if not os.path.exists(command):
-            logger.error(f"Launch script not found: {command}")
-            return False
-
-        try:
-            # Set up environment for terminal applications
-            env = os.environ.copy()
-            env['DISPLAY'] = ':0'
-            env['TERM'] = 'xterm'
-
-            logger.info("Trying to run bash script with fixed environment...")
-
-            # Try with nohup to detach from terminal
-            nohup_command = f"nohup {command} > /tmp/nativa_launch.log 2>&1 &"
-            result = subprocess.run(
-                nohup_command,
-                shell=True,
-                executable='/bin/bash',
-                env=env,
-                timeout=15
-            )
-
-            if result.returncode == 0:
-                logger.info("Bash script launched successfully")
-                time.sleep(8)  # Give more time for VLM services
-                return self._verify_services_running()
-
-            # Try with screen if available
-            if self._try_screen_launch(command):
-                return True
-
-            return False
-
-        except subprocess.TimeoutExpired:
-            logger.info("Bash script is running in background (timeout reached)")
-            return self._verify_services_running()
-        except Exception as e:
-            logger.error(f"Error running bash script: {e}")
-            return False
-
-    def _try_screen_launch(self, command):
-        """Try launching with screen if available"""
-        try:
-            screen_check = subprocess.run(['which', 'screen'],
-                                        capture_output=True,
-                                        text=True)
-
-            if screen_check.returncode == 0:
-                logger.info("Trying to launch with screen...")
-                screen_command = f"screen -dmS nativa_services {command}"
-                result = subprocess.run(screen_command, shell=True, timeout=5)
-
-                if result.returncode == 0:
-                    logger.info("Services launched in screen session 'nativa_services'")
-                    time.sleep(8)
-                    return self._verify_services_running()
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Error with screen launch: {e}")
-            return False
-
     def _launch_services_individually(self):
-        """Launch services individually including VLM services"""
+        """Launch each dependent service as its own subprocess.
+
+        Iterates a hardcoded list of services (currently just the required
+        Ollama LLM API), launching each via ``_launch_single_service``.
+
+        Returns:
+            True if the number of successfully launched services meets or
+            exceeds the number marked ``required``; False otherwise.
+        """
         logger.info("Launching enhanced services individually...")
 
         # Define services including VLM-related ones
@@ -114,20 +76,6 @@ class EnhancedNativaGPTStarter:
                 'cwd': None,
                 'required': True
             },
-            {
-                'name': 'STT API',
-                'command': 'python -m whisper_server --port 8030',
-                'port': 8030,
-                'cwd': None,
-                'required': False
-            },
-            {
-                'name': 'TTS API',
-                'command': 'python -m xtts_server --port 8020',
-                'port': 8020,
-                'cwd': None,
-                'required': False
-            }
         ]
 
         success_count = 0
@@ -155,7 +103,23 @@ class EnhancedNativaGPTStarter:
             return False
 
     def _launch_single_service(self, service):
-        """Launch a single service in the background"""
+        """Launch one dependency service as a detached background subprocess.
+
+        Skips launching if a process is already responding on the
+        service's configured port. Tracks the spawned process in
+        ``self.service_processes`` for later shutdown.
+
+        Args:
+            service: Dict describing the service, with keys ``name``
+                (display name), ``command`` (shell command to run),
+                ``port`` (port to check/verify), and ``cwd`` (working
+                directory, or None).
+
+        Returns:
+            True if the service was already running or was launched and
+            still alive shortly after starting; False if it exited
+            immediately or launching raised an exception.
+        """
         try:
             logger.info(f"Starting {service['name']}...")
 
@@ -196,7 +160,19 @@ class EnhancedNativaGPTStarter:
             return False
 
     def _check_port(self, port):
-        """Check if a port is responsive (enhanced version)"""
+        """Check whether a local port has a service responding on it.
+
+        Tries an HTTP GET to ``localhost:<port>`` first (treating 200 or
+        404 as "something is listening"); falls back to a raw TCP connect
+        check if the HTTP attempt raises.
+
+        Args:
+            port: The TCP port number to check on localhost.
+
+        Returns:
+            True if the port appears to have a service listening on it;
+            False otherwise.
+        """
         try:
             # First, try a lightweight HTTP GET to verify responsiveness
             response = requests.get(f"http://localhost:{port}", timeout=2)
@@ -214,45 +190,18 @@ class EnhancedNativaGPTStarter:
         except:
             return False
 
-    def _verify_services_running(self):
-        """Verify that services are actually running"""
-        services_to_check = [
-            (11434, "Ollama LLM API", True),  # Required
-            (8030, "STT API", False),         # Optional
-            (8020, "TTS API", False)          # Optional
-        ]
-
-        running_services = 0
-        required_running = 0
-        total_required = 0
-
-        logger.info("Verifying enhanced services are running...")
-        for port, name, required in services_to_check:
-            if required:
-                total_required += 1
-
-            if self._check_port(port):
-                logger.info(f"✓ {name} is running on port {port}")
-                running_services += 1
-                if required:
-                    required_running += 1
-            else:
-                if required:
-                    logger.error(f"✗ {name} (REQUIRED) is not responding on port {port}")
-                else:
-                    logger.warning(f"✗ {name} (optional) is not responding on port {port}")
-
-        # We need at least the required services
-        if required_running >= total_required:
-            logger.info(f"Minimum required services running: {required_running}/{total_required}")
-            logger.info(f"Total services running: {running_services}/{len(services_to_check)}")
-            return True
-        else:
-            logger.error(f"Not enough required services running: {required_running}/{total_required}")
-            return False
-
     def initialize_nativa(self):
-        """Initialize Enhanced NativaGPT with VLM support"""
+        """Load config, validate it, and construct the ``NativaGPT`` instance.
+
+        Loads config from ``CONFIG_MANAGER_FILE``, validates it via
+        ``_validate_enhanced_config``, ensures a VLM functions file exists
+        (``_ensure_vlm_functions_file``), and stores the resulting
+        ``NativaGPT`` instance on ``self.nativa``.
+
+        Returns:
+            True if initialization succeeded; False if config validation
+            failed or construction raised an exception.
+        """
         try:
             # Initialize config and handlers
             config_manager = ConfigManager(CONFIG_MANAGER_FILE)
@@ -281,7 +230,21 @@ class EnhancedNativaGPTStarter:
             return False
 
     def _validate_enhanced_config(self, config):
-        """Enhanced configuration validation including VLM settings"""
+        """Check for expected config sections and prepare the VLM output directory.
+
+        Warns (without failing) about any missing top-level sections.
+        If VLM support is enabled in config, creates its configured output
+        directory, which is a hard failure if that cannot be created.
+        Also warns if no vision model is configured.
+
+        Args:
+            config: The parsed application configuration dict.
+
+        Returns:
+            True unless the VLM output directory could not be created;
+            missing config sections or a missing vision model only produce
+            warnings and do not fail validation.
+        """
         required_sections = ['nativa_gpt', 'llm_config', 'vlm_config', 'topic_config']
 
         for section in required_sections:
@@ -307,9 +270,19 @@ class EnhancedNativaGPTStarter:
         return True
 
     def _ensure_vlm_functions_file(self, config):
-        """Ensure VLM functions file exists"""
+        """Create a default VLM functions JSON file if one does not already exist.
+
+        Writes a minimal single-function definition (an "Analyze Image"
+        function) to the hardcoded ``vlm_functions.json`` path, creating
+        parent directories as needed. Any failure is logged and swallowed
+        rather than raised.
+
+        Args:
+            config: The parsed application configuration dict (currently
+                unused, reserved for future use).
+        """
         try:
-            vlm_functions_path = "/home/pedrodias/Documents/git-repos/NativaGPT/config/functions/vlm_functions.json"
+            vlm_functions_path = str(REPO_ROOT / "config" / "functions" / "vlm_functions.json")
 
             if not os.path.exists(vlm_functions_path):
                 logger.info("Creating VLM functions file...")
@@ -339,7 +312,21 @@ class EnhancedNativaGPTStarter:
             logger.error(f"Error ensuring VLM functions file: {e}")
 
     def start(self):
-        """Start the enhanced system with VLM support"""
+        """Run the full startup sequence: dependencies, NativaGPT, main loop.
+
+        Launches dependencies (prompting the user to continue anyway on
+        failure), initializes ``NativaGPT`` (aborting on failure), installs
+        SIGINT/SIGTERM handlers, logs system status, and finally calls
+        ``self.nativa.start()`` to run the interactive loop. On
+        ``KeyboardInterrupt`` or any other exception, triggers
+        ``_shutdown``.
+
+        Returns:
+            False if dependency launch was declined/failed, or if
+            ``NativaGPT`` initialization failed, or if an exception
+            occurred during startup; otherwise this call blocks in
+            ``self.nativa.start()`` until interrupted.
+        """
         try:
             logger.info("=" * 70)
             logger.info("Starting Enhanced NativaGPT System with Advanced VLM Integration")
@@ -393,7 +380,18 @@ class EnhancedNativaGPTStarter:
             return False
 
     def run_interactive_mode(self):
-        """Run enhanced interactive mode with VLM capabilities"""
+        """Show the welcome banner and run NativaGPT's interactive loop directly.
+
+        Used by the ``--interactive``/``--no-deps`` CLI modes to skip the
+        dependency-launch step in ``start()`` and go straight to running
+        ``self.nativa.start()``. Requires ``self.nativa`` to already be
+        initialized.
+
+        Returns:
+            False if ``self.nativa`` has not been initialized yet;
+            otherwise blocks in the interactive loop until interrupted,
+            triggering ``_shutdown`` on ``KeyboardInterrupt``.
+        """
         if not self.nativa:
             logger.error("Enhanced NativaGPT not initialized")
             return False
@@ -407,7 +405,7 @@ class EnhancedNativaGPTStarter:
             self._shutdown()
 
     def _show_enhanced_welcome(self):
-        """Show enhanced welcome message with VLM features"""
+        """Print a welcome banner advertising VLM-related features and commands."""
         print("\n" + "🤖" * 20)
         print("🎉 Enhanced NativaGPT with Advanced VLM Integration 🎉")
         print("🤖" * 20)
@@ -431,15 +429,20 @@ class EnhancedNativaGPTStarter:
         print("=" * 50)
 
     def _show_system_status(self):
-        """Show enhanced system status"""
+        """Log the status of core dependency ports and optional VLM attributes.
+
+        Checks the well-known Ollama port and logs whether it's running,
+        then logs whether ``self.nativa`` exposes a ``vlm_handler``
+        and/or ``smart_shortcuts`` attribute (these are optional/legacy
+        extension points and may not be present on the current
+        ``NativaGPT`` implementation).
+        """
         logger.info("Enhanced System Status:")
         logger.info("-" * 30)
 
         # Check core services
         core_services = [
             (11434, "Ollama LLM/VLM"),
-            (8030, "Speech-to-Text"),
-            (8020, "Text-to-Speech")
         ]
 
         for port, name in core_services:
@@ -460,12 +463,25 @@ class EnhancedNativaGPTStarter:
         logger.info("-" * 30)
 
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals gracefully"""
+        """OS signal handler that triggers ``_shutdown`` on SIGINT/SIGTERM.
+
+        Args:
+            signum: The signal number received.
+            frame: The current stack frame (unused; required by the
+                signal handler signature).
+        """
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self._shutdown()
 
     def _shutdown(self):
-        """Enhanced graceful shutdown with VLM cleanup"""
+        """Stop NativaGPT and all launched dependency subprocesses, then exit.
+
+        Stops/cleans up ``self.nativa`` (if present), terminates each
+        tracked service subprocess (force-killing after a 10s grace
+        period), terminates ``self.launch_process`` (if any) via its
+        process group, and finally calls ``sys.exit(0)``. Errors at each
+        step are logged but do not prevent later steps from running.
+        """
         logger.info("Shutting down Enhanced NativaGPT system...")
 
         try:
@@ -520,13 +536,15 @@ class EnhancedNativaGPTStarter:
             logger.error(f"Error during shutdown: {e}")
 
     def show_running_services(self):
-        """Show which enhanced services are currently running"""
+        """Log the running/not-running status of each dependency port.
+
+        Checks Ollama via ``_check_port`` and logs a status line for it,
+        marked as required.
+        """
         logger.info("Checking enhanced service status...")
 
         services_to_check = [
             (11434, "Ollama LLM/VLM API", True),
-            (8030, "STT API", False),
-            (8020, "TTS API", False)
         ]
 
         for port, name, required in services_to_check:

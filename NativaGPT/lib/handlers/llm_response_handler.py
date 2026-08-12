@@ -1,3 +1,11 @@
+"""Extraction and formatting utilities for raw LLM chat responses.
+
+Provides :class:`LLMResponseHandler`, which parses JSON command payloads and
+plain text out of LLM responses (handling markdown code blocks, malformed
+JSON, and OpenAI/Ollama-style response envelopes), validates command
+structures, and formats results for user-facing output.
+"""
+
 import os
 import json
 import sys
@@ -7,15 +15,32 @@ from NativaGPT.lib.coloring_logger import logger
 
 
 class LLMResponseHandler:
+    """Parses, validates, and formats LLM chat responses.
+
+    Extracts embedded JSON command payloads and free-form text from raw LLM
+    output, sanitizes "thinking" artifacts (e.g. ``<think>`` tags), and
+    formats command execution results and topic query results into
+    human-readable strings.
+    """
+
     def __init__(self):
+        """Initialize the handler and log its creation."""
         logger.info("Initializing LLM Response Handler module.")
 
     def extract_json_str(self, llm_response):
-        """
+        """Extract JSON strings and remaining text from an LLM response.
+
         Enhanced function to extract JSON strings from LLM responses.
         Handles multiple formats including code blocks, malformed JSON, and nested structures.
-        :param llm_response: is the response from an LLM request. Accepts JSON strings and normal strings containing JSON strings.
-        :return: returns the json string of the response and the text in seperated variables.
+
+        Args:
+            llm_response: The response from an LLM request. Accepts JSON
+                strings and normal strings containing JSON strings.
+
+        Returns:
+            dict: A dict with ``"json_strings"`` (list of extracted JSON
+            strings) and ``"text_content"`` (the remaining non-JSON text,
+            joined into a single string).
         """
         # First, sanitize the response to remove think tags
         sanitized_response = self.sanitize_response_text(llm_response)
@@ -110,9 +135,24 @@ class LLMResponseHandler:
         }
 
     def _validate_and_add_json(self, json_str, json_strings, positions, start, end):
-        """
-        Helper method to validate JSON and add to results if valid.
-        Returns True if JSON was added, False otherwise.
+        """Validate a candidate JSON string and record it if it parses.
+
+        Command-like dicts (containing fields such as ``command``,
+        ``action``, ``function``, ``tool``, or ``call``) are inserted at the
+        front of ``json_strings``/``positions`` so they take priority over
+        other matches.
+
+        Args:
+            json_str: Candidate JSON substring to validate.
+            json_strings: List of already-found JSON strings, mutated in
+                place when ``json_str`` is valid.
+            positions: List of ``(start, end)`` tuples parallel to
+                ``json_strings``, mutated in place.
+            start: Start offset of ``json_str`` within the original text.
+            end: End offset of ``json_str`` within the original text.
+
+        Returns:
+            bool: True if the JSON was valid and added, False otherwise.
         """
         try:
             # Parse to validate
@@ -145,10 +185,21 @@ class LLMResponseHandler:
             return False
 
     def llm_json_parser(self, llm_response):
-        """
-        Function to extract the commands and JSON strings from the LLM response.
-        :param llm_response: is the response from an LLM request. Accepts JSON strings only.
-        :return: returns the JSON strings in the response.
+        """Extract the commands and JSON strings from the LLM response.
+
+        Handles both OpenAI Chat Completions-style responses
+        (``response["choices"][0]["message"]["content"]``) and Ollama-native
+        responses (``response["response"]``), falling back to treating the
+        raw payload as the content when neither shape is recognized.
+
+        Args:
+            llm_response: The response from an LLM request. Accepts a dict
+                in OpenAI or Ollama response format.
+
+        Returns:
+            dict: The result of :meth:`extract_json_str` on the extracted
+            content, or ``{"error": "Invalid response format"}`` if the
+            content could not be extracted.
         """
 
         # Handle both OpenAI and Ollama response formats
@@ -160,7 +211,11 @@ class LLMResponseHandler:
             elif "response" in llm_response:
                 response_content = llm_response["response"]
             else:
-                # Fallback to webgpthandler
+                # Neither an OpenAI Chat Completions shape nor an Ollama-native
+                # shape was recognized. Best-effort fallback: treat the raw
+                # payload itself as the response content (covers non-standard
+                # or self-hosted OpenAI-compatible servers with a different
+                # response envelope).
                 response_content = llm_response
 
         except (KeyError, IndexError) as e:
@@ -171,8 +226,19 @@ class LLMResponseHandler:
         return self.extract_json_str(response_content)
 
     def sanitize_response_text(self, text):
-        """
+        """Remove thinking/reasoning artifacts and collapse extra whitespace.
+
         Enhanced sanitization to remove all thinking patterns and unwanted content.
+        Strips ``<think>``, ``<thinking>``, ``<thought>``, ``<analysis>`` and
+        ``<reasoning>`` tags (and their content), common markdown-style
+        "Think:" markers, and natural-language "Let me think..." lead-ins.
+
+        Args:
+            text: The raw response text to sanitize. May be empty or ``None``.
+
+        Returns:
+            The sanitized text, or the original value unchanged if ``text``
+            was falsy.
         """
         if not text:
             return text
@@ -206,8 +272,17 @@ class LLMResponseHandler:
         return cleaned_text
 
     def extract_image_references(self, text):
-        """
-        Extract image file paths or URLs from the response text.
+        """Extract image file paths or URLs from the response text.
+
+        Recognizes markdown image syntax, HTML ``<img>`` tags, simple
+        ``image:``/``screenshot:``/``photo:`` prefixed references, and
+        ``file://`` URLs, for common image extensions.
+
+        Args:
+            text: The response text to scan for image references.
+
+        Returns:
+            list: The list of matched image paths/URLs (may be empty).
         """
         # Pattern to match common image references
         image_patterns = [
@@ -226,8 +301,15 @@ class LLMResponseHandler:
         return images
 
     def validate_command_structure(self, json_string):
-        """
-        Validate that a JSON command has the required structure.
+        """Validate that a JSON command has the required structure.
+
+        Args:
+            json_string: A JSON-encoded string expected to be an object
+                with a ``"COMMAND"`` field.
+
+        Returns:
+            tuple: ``(is_valid, message)`` where ``is_valid`` is a bool and
+            ``message`` describes the validation result or error.
         """
         try:
             command_data = json.loads(json_string)
@@ -253,8 +335,17 @@ class LLMResponseHandler:
             return False, f"Validation error: {e}"
 
     def extract_command_parameters(self, json_string):
-        """
-        Extract parameters from a command JSON string.
+        """Extract parameters from a command JSON string.
+
+        Args:
+            json_string: A JSON-encoded string, expected to be an object
+                optionally containing ``"COMMAND"`` and ``"LOCATION"``
+                fields plus arbitrary extra parameter fields.
+
+        Returns:
+            dict or None: A dict with ``"command"``, ``"location"``,
+            ``"parameters"`` (all remaining fields), and ``"raw_data"``
+            (the parsed JSON), or ``None`` if parsing/extraction failed.
         """
         try:
             command_data = json.loads(json_string)
@@ -285,8 +376,22 @@ class LLMResponseHandler:
             return None
 
     def format_response_for_output(self, command_results, text_content):
-        """
-        Format the final response combining command results and text content.
+        """Format the final response combining command results and text content.
+
+        Renders topic query results, available-topic listings, subscription
+        outcomes, generic command successes, and errors into a single
+        human-readable multi-line string.
+
+        Args:
+            command_results: List of command result dicts (e.g. topic query
+                results, subscription results, or generic success/error
+                dicts with keys like ``"success"``, ``"error"``, ``"messages"``,
+                ``"available_topics"``, ``"subscribed"``).
+            text_content: Free-form text to prepend to the formatted output.
+
+        Returns:
+            str: The combined, formatted response, or ``"No response
+            generated."`` if there is nothing to show.
         """
         formatted_response = []
 
@@ -379,8 +484,20 @@ class LLMResponseHandler:
         )
 
     def process_topic_response(self, topic_result):
-        """
-        Process and format topic query responses specifically.
+        """Process and format topic query responses specifically.
+
+        Handles ``"latest"``/``"history"`` query types (lists recent
+        messages), ``"wait_for_new"`` (reports the new message or a
+        timeout), and falls back to a generic completion message for other
+        query types.
+
+        Args:
+            topic_result: A topic query result dict, expected to contain
+                ``"topic"``, ``"query_type"``, and either ``"messages"``,
+                ``"message"``, or ``"error"``.
+
+        Returns:
+            str: A human-readable, formatted summary of the topic result.
         """
         if "error" in topic_result:
             return f"❌ Topic Error: {topic_result['error']}"

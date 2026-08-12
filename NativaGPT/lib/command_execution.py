@@ -1,3 +1,15 @@
+"""Subprocess and ROS command execution engine for NativaGPT.
+
+Provides :class:`CommandExecution`, which runs arbitrary shell commands and
+ROS1/ROS2 topic commands (``rostopic echo/info/hz``, ``ros2 topic
+echo/info/hz``) as managed subprocesses or, where possible, via a fast
+path that reads ROS topics directly instead of spawning a shell. Also
+provides output-type detection (images, point clouds, structured data,
+ROS topic payloads, JSON), heuristic error detection with human-readable
+diagnosis and suggested fixes, a registry of detached background
+processes, and lightweight in-memory performance metrics.
+"""
+
 import os
 import sys
 import time
@@ -23,7 +35,20 @@ from NativaGPT.lib.coloring_logger import logger
 
 
 def timeit(func):
-    """Decorator to measure function execution time."""
+    """Decorator that measures and logs a function's execution time.
+
+    Wraps ``func`` so each call is timed with ``time.time()``. The elapsed
+    time in milliseconds is emitted via ``logger.debug`` after the wrapped
+    function returns; the original return value is passed through
+    unchanged.
+
+    Args:
+        func: The function to instrument.
+
+    Returns:
+        Callable: A wrapped version of ``func`` with the same signature
+        and return value, plus a timing log side effect on each call.
+    """
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -37,20 +62,31 @@ def timeit(func):
 
 
 class CommandExecution:
-    """
-    CommandExecution v3.0 - Maximum Performance
+    """Executes shell commands and ROS topic operations as managed subprocesses.
 
-    Key Improvements:
-    - Lazy ROS initialization (50% faster startup)
-    - Topic type caching (3x faster repeated reads)
-    - Instant timeout response with threading.Event
-    - Optimized regex patterns with broader coverage
-    - Message converter caching
-    - Parallel topic reading capability
-    - Smart adaptive buffers
-    - Performance monitoring built-in
-    - Enhanced error detection patterns
-    - Connection pooling for ROS subscribers
+    Runs arbitrary shell commands via ``subprocess.Popen``, with background
+    reader threads, adaptive polling, and early error detection so that
+    long-running or failing commands can be surfaced quickly without
+    blocking. Commands that are still running when polling stops are
+    either registered in an internal process registry (for later output
+    retrieval and stopping) or waited on to completion, depending on the
+    caller's choice.
+
+    ROS1 (``rostopic echo/info/hz``) and ROS2 (``ros2 topic
+    echo/info/hz``) commands are detected via regex and, for ``echo``,
+    served through a three-tier fast path (a pre-subscribed message
+    cache, a cached topic configuration, or a temporary dynamic
+    subscription) that talks to ``rospy``/``rostopic`` directly instead of
+    spawning a subprocess. ROS node initialization is lazy and
+    thread-safe, and topic types/configurations are cached to avoid
+    repeated lookups.
+
+    Command output is classified (image/point cloud/structured/CSV/rosbag
+    file references, JSON, ROS topic payloads, or plain text) and, on
+    failure, matched against a table of known ROS/system error patterns
+    to produce a diagnosis with suggested fixes. A shared thread pool is
+    used for parallel command execution and batched topic reads, and
+    basic timing metrics are recorded for the main operations.
     """
 
     # ==================== OPTIMIZED REGEX PATTERNS ====================
@@ -354,6 +390,18 @@ class CommandExecution:
     ]
 
     def __init__(self, topic_reader_handler=None):
+        """Initializes the execution engine, thread pool, caches, and warmup.
+
+        Args:
+            topic_reader_handler: Optional handler (e.g. a
+                ``TopicReaderHandler``) that supplies ROS topic
+                subscription configuration and message conversion logic.
+                When provided, its topic configuration is used to
+                pre-build the topic cache and its pre-subscribed messages
+                are used by the fast ROS topic read path. When ``None``,
+                ROS topic reads fall back to dynamic, on-demand
+                subscriptions without message conversion.
+        """
         self._proc_registry: Dict[int, Dict[str, Any]] = {}
         self.topic_reader = topic_reader_handler
 
@@ -385,7 +433,7 @@ class CommandExecution:
         self._start_warmup()
 
     def _start_warmup(self):
-        """Background warmup for faster subsequent commands."""
+        """Starts a daemon thread that pre-warms subprocess spawning and checks the ROS environment."""
 
         def warmup():
             try:
@@ -412,7 +460,7 @@ class CommandExecution:
         warmup_thread.start()
 
     def _ensure_ros_initialized(self) -> bool:
-        """Lazy ROS initialization - only when first needed."""
+        """Lazily and thread-safely initializes the ROS node on first use; returns whether ROS is available."""
         if self._ros_initialized:
             return True
 
@@ -439,7 +487,7 @@ class CommandExecution:
                 return False
 
     def _build_topic_cache(self):
-        """Pre-build cache of topic configurations for O(1) lookup."""
+        """Builds an in-memory cache of topic name to topic config from `topic_reader` for O(1) lookup."""
         try:
             if not self.topic_reader:
                 return
@@ -458,7 +506,7 @@ class CommandExecution:
             logger.warning(f"Failed to build topic cache: {e}")
 
     def _record_metric(self, operation: str, duration_ms: float):
-        """Record performance metric."""
+        """Appends a timing sample for `operation`, keeping only the most recent 100 samples."""
         with self._metrics_lock:
             self._metrics[operation].append(duration_ms)
             # Keep only last 100 measurements
@@ -466,7 +514,14 @@ class CommandExecution:
                 self._metrics[operation].pop(0)
 
     def get_performance_stats(self) -> Dict[str, Dict[str, float]]:
-        """Get performance statistics."""
+        """Computes aggregate timing statistics for all recorded operations.
+
+        Returns:
+            Dict[str, Dict[str, float]]: A mapping from operation name (as
+            passed to `_record_metric`) to a dict with `avg_ms`, `min_ms`,
+            `max_ms`, and `count`, computed over the most recent samples
+            recorded for that operation.
+        """
         stats = {}
         with self._metrics_lock:
             for op, times in self._metrics.items():
@@ -482,9 +537,12 @@ class CommandExecution:
     # ==================== ROS TOPIC DETECTION ====================
 
     def _parse_ros_topic_command(self, command: str) -> Optional[Dict[str, Any]]:
-        """
-        Enhanced ROS topic command detection.
-        Supports: echo, info, hz for ROS1 and ROS2.
+        """Detects ROS1/ROS2 `rostopic`/`ros2 topic` echo, info, or hz commands via regex.
+
+        Returns:
+            A dict with `is_ros_topic`, `ros_version`, `operation`,
+            `topic_name`, and `once` if `command` matches a known
+            pattern, otherwise `None`.
         """
         cmd_lower = command.lower().strip()
 
@@ -560,9 +618,11 @@ class CommandExecution:
 
     @lru_cache(maxsize=128)
     def _get_topic_type_cached(self, topic_name: str) -> Optional[Any]:
-        """
-        Cached topic type lookup.
-        3x faster than repeated rostopic.get_topic_class calls.
+        """Looks up and caches (via `lru_cache`) the ROS message class for a topic.
+
+        Returns:
+            The topic's message type class, or `None` if ROS isn't
+            initialized or the topic has no publishers.
         """
         if not self._ensure_ros_initialized():
             return None
@@ -578,11 +638,24 @@ class CommandExecution:
 
     @timeit
     def _read_ros_topic_directly(self, topic_info: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Read topic data with three-tier strategy:
-        1. Pre-subscribed topics (instant)
-        2. Cached topic config (fast)
-        3. Dynamic reading (slow but works for any topic)
+        """Reads one message for a ROS topic using a three-tier fallback strategy.
+
+        Tries, in order: (1) an already-subscribed message no older than
+        10 seconds from `topic_reader`'s live cache, (2) a topic config
+        cached from `topic_reader.topic_cfg`, delegating the actual read
+        to `topic_reader._read_ros_topic`, and (3) a dynamic, on-demand
+        subscription via `_read_ros_topic_dynamic`. Falls through to the
+        next tier when a faster tier is unavailable or yields no data.
+
+        Args:
+            topic_info: Parsed topic command dict as returned by
+                `_parse_ros_topic_command`; only `topic_name` is used.
+
+        Returns:
+            A dict describing the read result. On success it includes
+            `success`, `topic_name`, `modality`, `data`, `message_type`,
+            `timestamp`, `files`, and `source`. On failure it includes
+            `success: False` and an `error` message.
         """
         if not self.topic_reader:
             return {"success": False, "error": "TopicReaderHandler not available"}
@@ -679,12 +752,26 @@ class CommandExecution:
     def _read_ros_topic_dynamic(
         self, topic_name: str, timeout: float = 2.0, max_wait: float = 5.0
     ) -> Dict[str, Any]:
-        """
-        Enhanced dynamic topic reading with:
-        - Instant timeout response using threading.Event
-        - Topic type caching
-        - Better error handling
-        - Performance tracking
+        """Reads a single message from a ROS topic via a temporary subscription.
+
+        Looks up the topic's message type (cached), subscribes with a
+        callback that captures only the first message and signals a
+        `threading.Event`, then waits up to `min(timeout, max_wait)`
+        seconds for the event before always unregistering the
+        subscriber. Records a `topic_read_timeout` or
+        `topic_read_success` performance metric.
+
+        Args:
+            topic_name: Name of the ROS topic to read.
+            timeout: Maximum seconds to wait for a message.
+            max_wait: Hard upper bound on the wait time, used instead of
+                `timeout` if smaller.
+
+        Returns:
+            A dict with `success` and, on success, `topic_name`,
+            `modality`, `data`, `message_type`, `timestamp`, `files`,
+            `source`, and `read_time_ms`. On failure, `success: False`
+            and an `error` message.
         """
         if not self._ensure_ros_initialized():
             return {"success": False, "error": "rospy not available"}
@@ -796,9 +883,21 @@ class CommandExecution:
     def read_multiple_topics(
         self, topic_names: List[str], timeout: float = 2.0
     ) -> Dict[str, Dict[str, Any]]:
-        """
-        Read multiple topics in parallel.
-        Up to 8x faster than sequential reads.
+        """Reads multiple ROS topics concurrently using the shared thread pool.
+
+        Args:
+            topic_names: Names of the topics to read; each is read once
+                via `_read_ros_topic_directly` (equivalent to `echo -n 1`).
+            timeout: Extra seconds (beyond the number of topics) to wait
+                for all reads to complete before giving up on the
+                remaining futures.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: A mapping from each topic name to
+            its read result dict (same shape as
+            `_read_ros_topic_directly`'s return value). Topics whose
+            future raised or timed out get
+            `{"success": False, "error": ...}`.
         """
         results = {}
 
@@ -828,17 +927,24 @@ class CommandExecution:
     def diagnose_error(
         self, stdout: str, stderr: str, command: str = ""
     ) -> Dict[str, Any]:
-        """
-        Diagnose command errors and suggest fixes.
+        """Matches command output against known error patterns and suggests fixes.
+
+        Args:
+            stdout: Captured standard output of the command.
+            stderr: Captured standard error of the command.
+            command: The original command string, included in the result
+                for context.
 
         Returns:
-            Dict with:
-                - has_error: bool
-                - category: str (error category)
-                - diagnosis: str (human-readable diagnosis)
-                - severity: str (critical, error, warning)
-                - fixes: List[str] (suggested fixes)
-                - original_error: str (error snippet)
+            Dict[str, Any]: `{"has_error": False}` if no error was
+            recognized (including when both `stdout` and `stderr` are
+            blank). Otherwise a dict with `has_error: True`, `category`,
+            `diagnosis`, `severity` (`critical`, `error`, or `warning`),
+            `fixes` (list of suggested remediation steps),
+            `original_error` (matching snippet, truncated to 200 chars),
+            and `command`. Falls back to a generic `GENERIC_ERROR`
+            diagnosis when `_default_error_match` detects an error that
+            doesn't match any of the specific patterns.
         """
         combined = f"{stdout}\n{stderr}"
         if not combined.strip():
@@ -888,7 +994,16 @@ class CommandExecution:
         return {"has_error": False}
 
     def format_diagnosis_for_output(self, diagnosis: Dict[str, Any]) -> str:
-        """Format diagnosis result as a human-readable message."""
+        """Formats a `diagnose_error` result as a human-readable, emoji-prefixed message.
+
+        Args:
+            diagnosis: A diagnosis dict as returned by `diagnose_error`.
+
+        Returns:
+            A multi-line string with the diagnosis category, description,
+            and numbered suggested fixes, or an empty string if
+            `diagnosis` has no error (`has_error` is falsy).
+        """
         if not diagnosis.get("has_error"):
             return ""
 
@@ -917,7 +1032,7 @@ class CommandExecution:
     # ==================== ENHANCED ERROR DETECTION ====================
 
     def _default_error_match(self, s: str) -> bool:
-        """Enhanced error matching with ROS-specific patterns."""
+        """Checks whether `s` contains a known error keyword or matches the ROS error regex."""
         if not s:
             return False
 
@@ -939,12 +1054,26 @@ class CommandExecution:
     def _detect_output_type(
         self, stdout: str, stderr: str, command: str = ""
     ) -> Dict[str, Any]:
-        """
-        Enhanced output type detection with:
-        - ROS topic fast path
-        - Parallel file scanning
-        - Better JSON detection
-        - Performance tracking
+        """Classifies command output and extracts structured data, files, or ROS topic payloads.
+
+        Checks for a stderr-based error first, then a ROS topic echo fast
+        path via `_read_ros_topic_directly`, then scans the combined
+        stdout/stderr for file paths of known types (image, point cloud,
+        structured, CSV, rosbag) — in parallel via the thread pool for
+        larger outputs — and finally attempts to parse stdout as JSON
+        (including fenced ```json``` blocks).
+
+        Args:
+            stdout: Captured standard output.
+            stderr: Captured standard error.
+            command: The original command string, used to detect ROS
+                topic commands.
+
+        Returns:
+            A dict with `type` (e.g. `text`, `error`, `json`, `image`, or
+            a ROS modality), `files` (existing file paths found in the
+            output), `data`, `has_error`, and `ros_topic_data` (populated
+            when a ROS topic read succeeded).
         """
         output_info = {
             "type": "text",
@@ -1045,7 +1174,7 @@ class CommandExecution:
     # ==================== OPTIMIZED BUFFER OPERATIONS ====================
 
     def _reader_thread(self, pipe, buffer: deque, name: str):
-        """Optimized reader thread with chunk reading for better performance."""
+        """Continuously reads lines from `pipe` into `buffer` until the pipe closes, then closes it."""
         try:
             # Read in chunks for better performance
             while True:
@@ -1065,10 +1194,7 @@ class CommandExecution:
                 pass
 
     def _join_buffer_efficient(self, buffer: deque) -> str:
-        """
-        Ultra-efficient buffer joining.
-        Uses single join operation on deque.
-        """
+        """Joins a deque (or list) of buffered output lines into a single stripped string."""
         if not buffer:
             return ""
         return "".join(buffer).strip()
@@ -1083,12 +1209,46 @@ class CommandExecution:
         error_match: Optional[Callable[[str], bool]] = None,
         detach_on_no_error: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Enhanced command execution with:
-        - ROS topic fast path with 3-tier caching
-        - Optimized polling with adaptive sleep
-        - Better timeout handling
-        - Performance metrics
+        """Executes a shell command, fast-pathing ROS topic echo reads.
+
+        For `rostopic echo`/`ros2 topic echo` commands, attempts a direct
+        ROS read via `_read_ros_topic_directly` first; only on failure
+        does it fall back to spawning a subprocess. Otherwise (or after a
+        fast-path failure), runs `command` in a shell subprocess with
+        background reader threads draining stdout/stderr into bounded
+        deques, and polls with adaptive, exponentially-backed-off sleeps.
+
+        While waiting, the command may exit in time (returning its final
+        result), have an error detected early in its stderr tail
+        (returning with `running: True` and
+        `note: "error_detected_early"`), or reach `timeout` /
+        `wait_for_errors_seconds` without finishing — in which case it is
+        either registered in `self._proc_registry` for later
+        polling/stopping (`detach_on_no_error=True`) or waited on to
+        completion (`detach_on_no_error=False`, which blocks).
+
+        Args:
+            command: The shell command to execute.
+            wait_for_errors_seconds: How long to actively poll for an
+                early error signal (or completion) before giving up on
+                error detection.
+            timeout: Optional hard deadline in seconds after which
+                polling stops even if the process hasn't exited and no
+                error was seen.
+            error_match: Optional predicate called on the tail of stderr
+                to detect an error early; defaults to
+                `_default_error_match`.
+            detach_on_no_error: If True (default) and the process is
+                still running with no error seen when polling stops,
+                register it as a detached background process instead of
+                blocking further. If False, block until the process
+                exits.
+
+        Returns:
+            Dict[str, Any]: Always includes `command`, `returncode`,
+            `stdout`, `stderr`, `running`, `pid`, `note`, `output_info`
+            (from `_detect_output_type`, possibly with a `diagnosis`
+            key), and `execution_time_ms`.
         """
         start_time = time.time()
         logger.info(f"Executing: {command[:80]}...")
@@ -1325,7 +1485,28 @@ class CommandExecution:
     # ==================== PROCESS MANAGEMENT ====================
 
     def stop_process(self, pid: int, grace_seconds: float = 2.0) -> Dict[str, Any]:
-        """Optimized process stopping with instant response."""
+        """Stops a previously detached process, escalating from SIGTERM to SIGKILL.
+
+        Sends `SIGTERM` to the process group and waits up to
+        `grace_seconds` for it to exit (polled via a background thread
+        and a `threading.Event` for prompt response); if it hasn't exited
+        by then, sends `SIGKILL`. Removes the process from the internal
+        registry regardless of the outcome.
+
+        Args:
+            pid: PID of a process previously registered via
+                `execute_command` (i.e. present in
+                `self._proc_registry`).
+            grace_seconds: How long to wait after `SIGTERM` before
+                escalating to `SIGKILL`.
+
+        Returns:
+            Dict[str, Any]: `{"ok": False, "error": ...}` if `pid` isn't
+            registered. Otherwise `{"ok": True, ...}` with
+            `already_stopped: True` if it had already exited, or
+            `returncode` (which may be `None` if the process could not be
+            confirmed stopped) otherwise.
+        """
         info = self._proc_registry.get(pid)
         if not info:
             return {"ok": False, "error": f"PID {pid} not found"}
@@ -1365,7 +1546,19 @@ class CommandExecution:
         return {"ok": True, "returncode": rc}
 
     def get_process_output(self, pid: int, tail_lines: int = 200) -> Dict[str, Any]:
-        """Retrieve process output with efficient tail extraction."""
+        """Retrieves buffered output for a registered (detached) process.
+
+        Args:
+            pid: PID of a process previously registered via
+                `execute_command`.
+            tail_lines: Maximum number of most-recent buffered lines to
+                return for each of stdout/stderr.
+
+        Returns:
+            Dict[str, Any]: `{"error": ...}` if `pid` isn't registered.
+            Otherwise `pid`, `running`, `stdout_tail`, `stderr_tail`, and
+            `returncode` (`None` while still running).
+        """
         info = self._proc_registry.get(pid)
         if not info:
             return {"error": f"PID {pid} not found"}
@@ -1399,9 +1592,32 @@ class CommandExecution:
         error_match: Optional[Callable[[str], bool]] = None,
         parallel: bool = False,
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Execute multiple commands with optional parallel execution.
-        Automatically detects ROS topic commands for batch optimization.
+        """Executes multiple commands, batching one-shot ROS topic echo reads.
+
+        Splits `commands` into one-shot `rostopic`/`ros2 topic echo`
+        reads (read in parallel via `read_multiple_topics`) and all other
+        commands (run via `_execute_commands_sequential` or
+        `_execute_commands_parallel`, depending on `parallel`).
+
+        Args:
+            commands: Commands to execute.
+            wait_for_errors_seconds: Passed through to `execute_command`
+                for non-topic commands.
+            timeout: Passed through to `execute_command` for non-topic
+                commands.
+            detach_on_no_error: Passed through to `execute_command` for
+                non-topic commands.
+            error_match: Passed through to `execute_command` for
+                non-topic commands.
+            parallel: If True, run non-topic commands concurrently via
+                the thread pool; if False, run them sequentially.
+
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: A mapping from each original
+            command string to a list containing its single result dict.
+            Batched ROS topic reads are instead keyed by a synthesized
+            `"rostopic echo <topic> -n 1"` string rather than the
+            original command text.
         """
         # Optimize: if all commands are ROS topic reads, use batch reading
         ros_topics = []
@@ -1476,7 +1692,7 @@ class CommandExecution:
         detach_on_no_error: bool,
         error_match: Optional[Callable[[str], bool]],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Sequential command execution with performance tracking."""
+        """Runs `commands` one at a time via `execute_command`, logging failures and ROS topic reads."""
         execute_result = {}
 
         for command in commands:
@@ -1519,9 +1735,10 @@ class CommandExecution:
         detach_on_no_error: bool,
         error_match: Optional[Callable[[str], bool]],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Parallel command execution with performance tracking.
-        WARNING: Only use for independent commands!
+        """Runs `commands` concurrently via the thread pool and `execute_command`.
+
+        WARNING: Only use for independent commands! Concurrent execution
+        gives no ordering guarantees between commands.
         """
         execute_result = {}
 
@@ -1557,7 +1774,14 @@ class CommandExecution:
     # ==================== CLEANUP ====================
 
     def __del__(self):
-        """Enhanced cleanup with performance stats logging."""
+        """Logs final performance stats and best-effort cleans up the executor and tracked subprocesses.
+
+        Runs on garbage collection: logs aggregate timing stats, shuts
+        down `self.executor` without waiting, and attempts to `SIGKILL`
+        any processes still present in `self._proc_registry`. All
+        exceptions are swallowed since this runs during
+        interpreter/object teardown.
+        """
         try:
             # Log performance stats before cleanup
             stats = self.get_performance_stats()

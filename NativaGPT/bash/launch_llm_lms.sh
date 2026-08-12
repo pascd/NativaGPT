@@ -1,9 +1,16 @@
 #!/bin/bash
+#
+# Launches LM Studio's CLI server as a local, OpenAI-compatible LLM backend.
+# Requires the LM Studio AppImage (https://lmstudio.ai) and its "lms" CLI.
+#
+# Override the defaults below by exporting the corresponding env var before
+# running this script, e.g.:
+#   LMS_APPIMAGE_DIR=/opt/lmstudio LMS_MODEL_NAME=my-model ./launch_llm_lms.sh
 
 echo "Starting LM Studio from CLI..."
 
 # Define LM Studio AppImage path
-LMS_APPIMAGE_DIR="/home/pedrodias/Downloads"
+LMS_APPIMAGE_DIR="${LMS_APPIMAGE_DIR:-$HOME/Downloads}"
 LMS_APPIMAGE_NAME="LM-Studio*.AppImage"
 
 # Change directory to where the AppImage is located
@@ -30,7 +37,7 @@ while ! pgrep -f "LM-Studio" >/dev/null; do
 done
 
 # Define the model
-MODEL_NAME="lmstudio-community/DeepSeek-R1-Distill-Qwen-7B-GGUF/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+MODEL_NAME="${LMS_MODEL_NAME:-lmstudio-community/DeepSeek-R1-Distill-Qwen-7B-GGUF/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf}"
 
 # Check if the model is available, if not, download it
 echo "Checking if model is available..."

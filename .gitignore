@@ -61,6 +61,7 @@ srv_gen/
 #ignore log files someone is creating
 *.log
 *.gz
+logs/
 
 #ignore latex temp files
 *.aux

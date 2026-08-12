@@ -1,3 +1,12 @@
+"""Configuration and tool-database loading for NativaGPT.
+
+Provides :class:`ConfigManager`, which loads the main JSON application
+configuration (resolving ``${REPO_ROOT}`` path placeholders) and the
+collection of "tool" JSON files that describe the functions/commands
+exposed to the LLM, with validation, normalization, caching, and search
+helpers on top.
+"""
+
 import json
 import os
 import glob
@@ -7,16 +16,48 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
+# Absolute path to the repository root (the directory containing this
+# package's outer "NativaGPT/" folder, "config/", "README.md", etc).
+# Computed once from this file's own location so config values can refer to
+# "${REPO_ROOT}" instead of a hardcoded, developer-specific absolute path.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _substitute_repo_root(value: Any) -> Any:
+    """Recursively replace the literal token "${REPO_ROOT}" in config values.
+
+    Walks dicts/lists/strings loaded from a config JSON file and replaces
+    every occurrence of the placeholder "${REPO_ROOT}" with the actual
+    repository root path, so config files can ship portable, relative-style
+    paths (e.g. "${REPO_ROOT}/config/functions") instead of a contributor's
+    personal absolute path.
+
+    Args:
+        value: A JSON-decoded value (dict, list, str, or other scalar).
+
+    Returns:
+        The same structure with every "${REPO_ROOT}" substring replaced.
+    """
+    if isinstance(value, str):
+        return value.replace("${REPO_ROOT}", str(REPO_ROOT))
+    if isinstance(value, dict):
+        return {k: _substitute_repo_root(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute_repo_root(v) for v in value]
+    return value
+
 
 class ConfigManager:
-    """
-    ConfigManager v2.0 - Performance Optimized
-    - Loads main configuration
-    - Loads tools from database folder
-    - Caches tools for performance
-    - Thread-safe operations
-    - Parallel JSON file loading
-    - Hot reload capability
+    """Loads, validates, and caches the application configuration and tool database.
+
+    Reads the main JSON config file (or accepts an already-parsed dict),
+    resolving any "${REPO_ROOT}" placeholders in string values, and
+    separately loads the "tool" JSON files referenced by
+    ``nativa_gpt.database_folder`` (the function/command definitions exposed
+    to the LLM). Tool loading is parallelized for folders with many files
+    and the results are cached until ``reload_tools()`` is called.
+
+    All public methods are safe to call from multiple threads.
     """
 
     def __init__(self, config_path: str):
@@ -30,15 +71,16 @@ class ConfigManager:
         self.config_json = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load main configuration file."""
+        """Load the main configuration file and resolve "${REPO_ROOT}" placeholders."""
         try:
-            # If config_path is already a dict, return it directly
+            # If config_path is already a dict, return it directly (still
+            # resolving placeholders, in case it was built programmatically).
             if isinstance(self.config_path, dict):
-                return self.config_path
-            # Otherwise
+                return _substitute_repo_root(self.config_path)
+            # Otherwise, load it from disk.
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-            return config
+            return _substitute_repo_root(config)
         except FileNotFoundError:
             raise FileNotFoundError(f"Configuration file not found: {self.config_path}")
         except json.JSONDecodeError as e:
@@ -47,7 +89,15 @@ class ConfigManager:
             raise RuntimeError(f"Error loading configuration: {e}")
 
     def get(self) -> Dict[str, Any]:
-        """Get the main configuration."""
+        """Returns the main configuration, loading it first if necessary.
+
+        Thread-safe: if the configuration hasn't been loaded yet (or was
+        cleared), it is loaded under `self._lock` before returning.
+
+        Returns:
+            Dict[str, Any]: The parsed configuration dict, with
+            ``${REPO_ROOT}`` placeholders already resolved.
+        """
         if self.config_json is None:
             with self._lock:
                 if self.config_json is None:
@@ -55,7 +105,17 @@ class ConfigManager:
         return self.config_json
 
     def reload(self) -> Dict[str, Any]:
-        """Reload configuration from file."""
+        """Reloads the configuration from disk (or the original dict) and invalidates the tools cache.
+
+        Returns:
+            Dict[str, Any]: The freshly loaded configuration dict.
+
+        Raises:
+            FileNotFoundError: If `self.config_path` is a file path that
+                does not exist.
+            ValueError: If the configuration file contains invalid JSON.
+            RuntimeError: For any other error encountered while loading.
+        """
         with self._lock:
             self.config_json = self._load_config()
             self._tools_cache = None  # Invalidate tools cache
@@ -64,9 +124,18 @@ class ConfigManager:
     # ---------------------- Tools Loading ----------------------
 
     def get_tools_json(self) -> List[Dict[str, Any]]:
-        """
-        Load all JSON files from database folder and treat each object as a tool.
-        Results are cached for performance.
+        """Returns the raw (unvalidated) tool objects loaded from the database folder.
+
+        Results are cached in `self._tools_cache` after the first call;
+        subsequent calls return the cached list until `reload_tools()` (or
+        `reload()`) is called. Loading is thread-safe via a double-checked
+        lock.
+
+        Returns:
+            List[Dict[str, Any]]: One dict per tool object found across
+            all JSON files in the configured database folder, each
+            tagged with `_source_file` and `_source_path`. Empty if the
+            database folder is not configured or not found.
         """
         # Return cached tools if available
         if self._tools_cache is not None:
@@ -83,7 +152,18 @@ class ConfigManager:
             return tools
 
     def _load_tools_from_database(self) -> List[Dict[str, Any]]:
-        """Internal method to load tools from database folder."""
+        """Finds and loads all tool JSON files under ``nativa_gpt.database_folder``.
+
+        Expands ``~`` and environment variables in the configured folder
+        path, then dispatches to `_load_tools_parallel` (more than 5
+        files) or `_load_tools_sequential`. Logs a warning and returns an
+        empty list if the folder isn't configured, doesn't exist, or
+        contains no JSON files; logs and swallows any other error.
+
+        Returns:
+            List[Dict[str, Any]]: All tool objects found, or an empty
+            list on failure.
+        """
         database_folder = self.config_json.get("nativa_gpt", {}).get("database_folder", "")
 
         if not database_folder:
@@ -123,7 +203,7 @@ class ConfigManager:
             return []
 
     def _find_json_files(self, folder: str, recursive: bool = True) -> List[str]:
-        """Find all JSON files in folder."""
+        """Globs for `*.json` files under `folder`, recursively by default."""
         if recursive:
             # Recursive search
             pattern = os.path.join(folder, "**", "*.json")
@@ -134,7 +214,7 @@ class ConfigManager:
             return glob.glob(pattern)
 
     def _load_tools_sequential(self, json_files: List[str]) -> List[Dict[str, Any]]:
-        """Load JSON files sequentially."""
+        """Loads `json_files` one at a time via `_load_single_json_file`, skipping files that error."""
         tools = []
 
         for json_file in json_files:
@@ -147,7 +227,7 @@ class ConfigManager:
         return tools
 
     def _load_tools_parallel(self, json_files: List[str]) -> List[Dict[str, Any]]:
-        """Load JSON files in parallel for better performance."""
+        """Loads `json_files` concurrently via `self.executor`, skipping files that error."""
         tools = []
 
         futures = [self.executor.submit(self._load_single_json_file, f) for f in json_files]
@@ -162,9 +242,19 @@ class ConfigManager:
         return tools
 
     def _load_single_json_file(self, filepath: str) -> List[Dict[str, Any]]:
-        """
-        Load a single JSON file and return list of tool objects.
-        Handles both single objects and arrays.
+        """Loads one JSON file and returns its contents as a list of tool dicts.
+
+        Handles both a top-level JSON array (one tool per element) and a
+        single top-level JSON object (treated as one tool). Each returned
+        tool dict gains `_source_file` (basename) and `_source_path`
+        (path relative to the config file's directory, or the raw path
+        if the config was supplied as a dict) keys. Invalid JSON, read
+        errors, or an unexpected top-level type are logged and result in
+        an empty list rather than raising.
+
+        Returns:
+            List[Dict[str, Any]]: The tool object(s) found in the file,
+            or an empty list on error / unexpected structure.
         """
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -207,8 +297,17 @@ class ConfigManager:
             return []
 
     def validate_tool(self, tool: Dict[str, Any]) -> bool:
-        """
-        Validate that a tool object has the minimum required fields.
+        """Checks that a tool object has the minimum required fields (`name`, `command`).
+
+        Logs a warning (including the tool's `_source_file`, if any) for
+        the first missing required field found.
+
+        Args:
+            tool: A raw tool dict as returned by `get_tools_json`.
+
+        Returns:
+            bool: True if all required fields are present, False
+            otherwise.
         """
         required_fields = ['name', 'command']
 
@@ -221,9 +320,22 @@ class ConfigManager:
         return True
 
     def normalize_tool(self, tool: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Normalize tool object to standard format.
-        Ensures all tools have consistent structure.
+        """Normalizes a raw tool dict into a consistent standard shape.
+
+        Fills in defaults for missing fields (e.g. falls back from
+        `desc`/`params` to `description`/`parameters`) so downstream code
+        can rely on a fixed set of keys regardless of how the source JSON
+        was authored.
+
+        Args:
+            tool: A raw tool dict, typically one that has already passed
+                `validate_tool`.
+
+        Returns:
+            Dict[str, Any]: A new dict with exactly the keys `name`,
+            `command`, `description`, `execution`, `location`,
+            `parameters`, `examples`, `category`, `tags`,
+            `_source_file`, and `_source_path`.
         """
         normalized = {
             'name': tool.get('name', 'unnamed_tool'),
@@ -242,9 +354,14 @@ class ConfigManager:
         return normalized
 
     def get_validated_tools(self) -> List[Dict[str, Any]]:
-        """
-        Get all tools from database, validated and normalized.
-        Returns only valid tools in standard format.
+        """Returns all cached tools, filtered by `validate_tool` and normalized by `normalize_tool`.
+
+        Logs an info message with the count of tools filtered out for
+        failing validation, if any.
+
+        Returns:
+            List[Dict[str, Any]]: Normalized tool dicts for every raw
+            tool that passed validation.
         """
         raw_tools = self.get_tools_json()
 
@@ -261,9 +378,12 @@ class ConfigManager:
         return validated_tools
 
     def get_tools_by_category(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Get tools grouped by category.
-        Returns: {category_name: [tool1, tool2, ...]}
+        """Groups validated, normalized tools by their `category` field.
+
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: A mapping from category name
+            (defaulting to `"Uncategorized"` when unset) to the list of
+            tool dicts in that category.
         """
         tools = self.get_validated_tools()
 
@@ -277,9 +397,14 @@ class ConfigManager:
         return categorized
 
     def get_tool_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """
-        Find a tool by its name.
-        Returns None if not found.
+        """Finds a validated, normalized tool by its exact `name`.
+
+        Args:
+            name: The exact tool name to look up (case-sensitive).
+
+        Returns:
+            Optional[Dict[str, Any]]: The matching normalized tool dict,
+            or `None` if no tool with that name exists.
         """
         tools = self.get_validated_tools()
 
@@ -290,9 +415,17 @@ class ConfigManager:
         return None
 
     def search_tools(self, query: str) -> List[Dict[str, Any]]:
-        """
-        Search tools by name, description, or tags.
-        Case-insensitive search.
+        """Searches validated tools whose name, description, or tags contain `query`.
+
+        Matching is case-insensitive; a tool is included at most once
+        even if `query` matches multiple fields.
+
+        Args:
+            query: The substring to search for.
+
+        Returns:
+            List[Dict[str, Any]]: Normalized tool dicts matching the
+            query, in their original order.
         """
         query_lower = query.lower()
         tools = self.get_validated_tools()
@@ -318,9 +451,11 @@ class ConfigManager:
         return matching_tools
 
     def reload_tools(self) -> List[Dict[str, Any]]:
-        """
-        Reload tools from database folder.
-        Invalidates cache and loads fresh data.
+        """Invalidates the tools cache and reloads raw tool data from the database folder.
+
+        Returns:
+            List[Dict[str, Any]]: The freshly loaded raw tool list (same
+            shape as `get_tools_json`).
         """
         with self._lock:
             self._tools_cache = None
